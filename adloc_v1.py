@@ -159,7 +159,7 @@ class TravelTime(nn.Module):
             phase_weight_ = phase_weight[phase_type == type]
 
             station_loc_ = self.station_loc(station_index_)
-            station_dt_ = self.station_dt(station_index_)[:, [type]]
+            station_dt_ = self.station_dt(station_index_)[:, type].unsqueeze(-1)
 
             event_loc_ = self.event_loc(event_index_)
             event_time_ = self.event_time(event_index_)
