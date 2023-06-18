@@ -74,7 +74,7 @@ plt.figure()
 plt.scatter(stations["x_km"], stations["y_km"], s=10, marker="^")
 plt.scatter(events["x_km"], events["y_km"], s=1)
 plt.axis("scaled")
-plt.savefig(figure_path / "station_event.png", dpi=300, bbox_inches="tight")
+plt.savefig(figure_path / "station_event_v1.png", dpi=300, bbox_inches="tight")
 
 # %%
 event_index = []
@@ -248,5 +248,5 @@ plt.plot(invert_event_loc[:, 0], invert_event_loc[:, 1], "x", markersize=1, colo
 # plt.xlim(xlim)
 # plt.ylim(ylim)
 plt.legend()
-plt.savefig(figure_path / "invert_location.png", dpi=300, bbox_inches="tight")
+plt.savefig(figure_path / "invert_location_v1.png", dpi=300, bbox_inches="tight")
 # %%

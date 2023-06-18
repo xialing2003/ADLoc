@@ -20,16 +20,13 @@ def get_args_parser(add_help=True):
 
     parser = argparse.ArgumentParser(description="PyTorch Detection Training", add_help=add_help)
 
-    parser.add_argument("--data-path", default="/datasets01/COCO/022719/", type=str, help="dataset path")
-    parser.add_argument("--dataset", default="coco", type=str, help="dataset name")
-    parser.add_argument("--model", default="maskrcnn_resnet50_fpn", type=str, help="model name")
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
         "-b", "--batch-size", default=2, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
     )
     parser.add_argument("--epochs", default=26, type=int, metavar="N", help="number of total epochs to run")
     parser.add_argument(
-        "-j", "--workers", default=4, type=int, metavar="N", help="number of data loading workers (default: 4)"
+        "-j", "--workers", default=0, type=int, metavar="N", help="number of data loading workers (default: 4)"
     )
     parser.add_argument("--opt", default="sgd", type=str, help="optimizer")
     parser.add_argument(
@@ -108,35 +105,63 @@ class PhaseDataset:
         self.picks = picks
         self.events = events
         self.stations = stations
+        self.__cache()
 
     def __len__(self):
-        return len(self.events)
+        # return len(self.events)
+        return 1
+
+    def __cache(self):
+        event_index = []
+        station_index = []
+        phase_score = []
+        phase_time = []
+        phase_type = []
+
+        for i in range(len(self.events)):
+            phase_time.append(self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]["phase_time"].values)
+            phase_score.append(self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]["phase_score"].values)
+            phase_type.extend(self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]["phase_type"].values.tolist())
+            event_index.extend([i] * len(self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]))
+            station_index.append(
+                self.stations.loc[self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]["station_id"], "index"].values
+            )
+
+        phase_time = np.concatenate(phase_time)
+        phase_score = np.concatenate(phase_score)
+        # phase_type = np.array([{"P": 0, "S": 1}[x.upper()] for x in phase_type])
+        event_index = np.array(event_index)
+        station_index = np.concatenate(station_index)
+
+        self.station_index = torch.tensor(station_index, dtype=torch.long)
+        self.event_index = torch.tensor(event_index, dtype=torch.long)
+        self.phase_weight = torch.tensor(phase_score, dtype=torch.float32)
+        self.phase_time = torch.tensor(phase_time[:, np.newaxis], dtype=torch.float32)
+        self.phase_type = torch.tensor([{"P": 0, "S": 1}[x.upper()] for x in phase_type], dtype=torch.long)
 
     def __getitem__(self, i):
-        phase_time = self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]["phase_time"].values
-        phase_score = self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]["phase_score"].values
-        phase_type = self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]][
-            "phase_type"
-        ].values.tolist()
-        event_index = np.array([i] * len(self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]))
-        station_index = self.stations.loc[
-            self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]["station_id"], "index"
-        ].values
+        
+        # phase_time = self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]["phase_time"].values
+        # phase_score = self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]["phase_score"].values
+        # phase_type = self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]][
+        #     "phase_type"
+        # ].values.tolist()
+        # event_index = np.array([i] * len(self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]))
+        # station_index = self.stations.loc[
+        #     self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]["station_id"], "index"
+        # ].values
 
-        station_index = torch.tensor(station_index, dtype=torch.long)
-        event_index = torch.tensor(event_index, dtype=torch.long)
-        phase_weight = torch.tensor(phase_score, dtype=torch.float32)
-        phase_time = torch.tensor(phase_time[:, np.newaxis], dtype=torch.float32)
 
         return {
-            "event_index": event_index,
-            "station_index": station_index,
-            "phase_time": phase_time,
-            "phase_weight": phase_weight,
-            "phase_type": phase_type,
+            "event_index": self.event_index,
+            "station_index": self.station_index,
+            "phase_time": self.phase_time,
+            "phase_weight": self.phase_weight,
+            "phase_type": self.phase_type,
         }
 
 
+# %%
 class TravelTime(nn.Module):
     def __init__(
         self,
@@ -146,7 +171,7 @@ class TravelTime(nn.Module):
         station_dt=None,
         event_loc=None,
         event_time=None,
-        reg=0.001,
+        reg=0.1,
         velocity={"P": 6.0, "S": 6.0 / 1.73},
         dtype=torch.float32,
     ):
@@ -154,59 +179,83 @@ class TravelTime(nn.Module):
         self.num_event = num_event
         self.event_loc = nn.Embedding(num_event, 3)
         self.event_time = nn.Embedding(num_event, 1)
-        self.station_dt = nn.Embedding(num_station, 1)
+        self.station_loc = nn.Embedding(num_station, 3)
+        self.station_dt = nn.Embedding(num_station, 2)  # vp, vs
+        self.station_loc.weight = torch.nn.Parameter(torch.tensor(station_loc, dtype=dtype), requires_grad=False)
         if station_dt is not None:
-            self.station_dt.weight = torch.nn.Parameter(torch.tensor(station_dt, dtype=dtype))
+            self.station_dt.weight = torch.nn.Parameter(
+                torch.tensor(station_dt, dtype=dtype)
+            )  # , requires_grad=False)
         else:
-            self.station_dt.weight = torch.nn.Parameter(torch.zeros(num_station, 1, dtype=dtype))
-        self.register_buffer("station_loc", torch.tensor(station_loc, dtype=dtype))
-        self.velocity = velocity
+            self.station_dt.weight = torch.nn.Parameter(
+                torch.zeros(num_station, 2, dtype=dtype)
+            )  # , requires_grad=False)
+        # self.register_buffer("station_loc", torch.tensor(station_loc, dtype=dtype))
+        self.velocity = [velocity["P"], velocity["S"]]
         self.reg = reg
         if event_loc is not None:
-            self.event_loc.weight = torch.nn.Parameter(torch.tensor(event_loc, dtype=dtype))
+            self.event_loc.weight = torch.nn.Parameter(torch.tensor(event_loc, dtype=dtype).contiguous())
         if event_time is not None:
-            self.event_time.weight = torch.nn.Parameter(torch.tensor(event_time, dtype=dtype))
+            self.event_time.weight = torch.nn.Parameter(torch.tensor(event_time, dtype=dtype).contiguous())
 
     def calc_time(self, event_loc, station_loc, phase_type):
         dist = torch.linalg.norm(event_loc - station_loc, axis=-1, keepdim=True)
-        velocity = torch.ones(len(dist), 1)
-        velocity[phase_type == "p"] = self.velocity["P"]
-        velocity[phase_type == "s"] = self.velocity["S"]
-        tt = dist / velocity
-
+        # velocity = torch.tensor([self.velocity[p] for p in phase_type]).unsqueeze(-1)
+        # tt = dist / velocity
+        # if isinstance(self.velocity, dict):
+        #     self.velocity = torch.tensor([vel[p.upper()] for p in phase_type]).unsqueeze(-1)
+        # tt = dist / self.velocity
+        tt = dist / self.velocity[phase_type]
         return tt
 
     def forward(
-        self, station_index, event_index=None, phase_type=None, phase_time=None, phase_weight=None, use_pair=False
+        self,
+        station_index,
+        event_index=None,
+        phase_type=None,
+        phase_time=None,
+        phase_weight=None,
+        double_difference=False,
     ):
-        station_loc = self.station_loc[station_index]
-        station_dt = self.station_dt(station_index)
+        loss = 0.0
+        pred_time = torch.zeros(len(phase_type), 1, dtype=torch.float32)
+        for type in [0, 1]:
+            station_index_ = station_index[phase_type == type]
+            event_index_ = event_index[phase_type == type]
+            phase_weight_ = phase_weight[phase_type == type]
 
-        event_loc = self.event_loc(event_index)
-        event_time = self.event_time(event_index)
+            station_loc_ = self.station_loc(station_index_)
+            station_dt_ = self.station_dt(station_index_)[:, [type]]
 
-        tt = self.calc_time(event_loc, station_loc, phase_type)
-        t = event_time + tt + station_dt
+            event_loc_ = self.event_loc(event_index_)
+            event_time_ = self.event_time(event_index_)
 
-        if use_pair:
-            t = t[0] - t[1]
+            tt_ = self.calc_time(event_loc_, station_loc_, type)
+            t_ = event_time_ + tt_ + station_dt_
+            pred_time[phase_type == type] = t_
 
-        if phase_time is None:
-            loss = None
-        else:
-            # loss = torch.mean(phase_weight * (t - phase_time) ** 2)
-            loss = torch.mean(F.huber_loss(t, phase_time, reduction="none") * phase_weight)
-            loss += self.reg * torch.mean(
-                torch.abs(station_dt)
-            )  ## prevent the trade-off between station_dt and event_time
+            if double_difference:
+                t_ = t_[0] - t_[1]
 
-        return {"phase_time": t, "loss": loss}
+            if phase_time is not None:
+                phase_time_ = phase_time[phase_type == type]
+                # loss = torch.mean(phase_weight * (t - phase_time) ** 2)
+                loss += torch.mean(
+                    F.huber_loss(tt_ + station_dt_, phase_time_ - event_time_, reduction="none") * phase_weight_
+                )
+                loss += self.reg * torch.mean(
+                    torch.abs(station_dt_)
+                )  ## prevent the trade-off between station_dt and event_time
+
+        return {"phase_time": pred_time, "loss": loss}
 
 
 def main(args):
-
     # %%
     data_path = Path("test_data")
+    figure_path = Path("figures")
+    figure_path.mkdir(exist_ok=True)
+
     config = {
         "center": (-117.504, 35.705),
         "xlim_degree": [-118.004, -117.004],
@@ -220,9 +269,9 @@ def main(args):
     stations = pd.read_csv(data_path / "stations.csv", delimiter="\t")
     picks = pd.read_csv(data_path / "picks_gamma.csv", delimiter="\t", parse_dates=["phase_time"])
     events = pd.read_csv(data_path / "catalog_gamma.csv", delimiter="\t", parse_dates=["time"])
-    
-    events = events[events["event_index"] < 1]
-    picks = picks[picks["event_index"] < 1]
+
+    events = events[events["event_index"] < 100]
+    picks = picks[picks["event_index"] < 100]
 
     # %%
     proj = Proj(f"+proj=sterea +lon_0={config['center'][0]} +lat_0={config['center'][1]} +units=km")
@@ -260,34 +309,7 @@ def main(args):
     plt.scatter(stations["x_km"], stations["y_km"], s=10, marker="^")
     plt.scatter(events["x_km"], events["y_km"], s=1)
     plt.axis("scaled")
-
-    # %%
-
-    # event_index = []
-    # station_index = []
-    # phase_score = []
-    # phase_time = []
-    # phase_type = []
-
-    # for i in range(len(events)):
-    #     phase_time.append(picks[picks["event_index"] == events.loc[i, "event_index"]]["phase_time"].values)
-    #     phase_score.append(picks[picks["event_index"] == events.loc[i, "event_index"]]["phase_score"].values)
-    #     phase_type.extend(picks[picks["event_index"] == events.loc[i, "event_index"]]["phase_type"].values.tolist())
-    #     event_index.extend([i] * len(picks[picks["event_index"] == events.loc[i, "event_index"]]))
-    #     station_index.append(stations.loc[
-    #         picks[picks["event_index"] == events.loc[i, "event_index"]]["station_id"], "index"
-    #     ].values)
-
-    # phase_time = np.concatenate(phase_time)
-    # phase_score = np.concatenate(phase_score)
-    # event_index = np.array(event_index)
-    # station_index = np.concatenate(station_index)
-
-    # # %%
-    # station_index = torch.tensor(station_index, dtype=torch.long)
-    # event_index = torch.tensor(event_index, dtype=torch.long)
-    # phase_weight = torch.tensor(phase_score, dtype=torch.float32)
-    # phase_time = torch.tensor(phase_time[:, np.newaxis], dtype=torch.float32)
+    plt.savefig(figure_path / "station_event_v2.png", dpi=300, bbox_inches="tight")
 
     utils.init_distributed_mode(args)
     print(args)
@@ -303,134 +325,99 @@ def main(args):
         phase_dataset, batch_size=None, sampler=sampler, num_workers=args.workers, collate_fn=None
     )
 
+    #####################################
+    # %%
+    event_index = []
+    station_index = []
+    phase_score = []
+    phase_time = []
+    phase_type = []
 
-    travel_time = TravelTime(num_event, num_station, station_loc, velocity={"P": vp, "S": vs})
+    for i in range(len(events)):
+        phase_time.append(picks[picks["event_index"] == events.loc[i, "event_index"]]["phase_time"].values)
+        phase_score.append(picks[picks["event_index"] == events.loc[i, "event_index"]]["phase_score"].values)
+        phase_type.extend(picks[picks["event_index"] == events.loc[i, "event_index"]]["phase_type"].values.tolist())
+        event_index.extend([i] * len(picks[picks["event_index"] == events.loc[i, "event_index"]]))
+        station_index.append(
+            stations.loc[picks[picks["event_index"] == events.loc[i, "event_index"]]["station_id"], "index"].values
+        )
+
+    phase_time = np.concatenate(phase_time)
+    phase_score = np.concatenate(phase_score)
+    phase_type = np.array([{"P": 0, "S": 1}[x.upper()] for x in phase_type])
+    event_index = np.array(event_index)
+    station_index = np.concatenate(station_index)
+
+    # %%
+    station_index = torch.tensor(station_index, dtype=torch.long)
+    event_index = torch.tensor(event_index, dtype=torch.long)
+    phase_weight = torch.tensor(phase_score, dtype=torch.float32)
+    phase_time = torch.tensor(phase_time[:, np.newaxis], dtype=torch.float32)
+    phase_type = torch.tensor(phase_type, dtype=torch.long)
+
+    #####################################
+
+    travel_time = TravelTime(num_event, num_station, station_loc, event_time=event_time, velocity={"P": vp, "S": vs})
+    tt = travel_time(station_index, event_index, phase_type, phase_weight=phase_weight)["phase_time"]
+    print("Loss using init location", F.mse_loss(tt, phase_time))
     init_event_loc = travel_time.event_loc.weight.clone().detach().numpy()
     init_event_time = travel_time.event_time.weight.clone().detach().numpy()
 
-    optimizer = optim.LBFGS(params=travel_time.parameters(), max_iter=1000, line_search_fn="strong_wolfe")
-    # optimizer = optim.Adam(params=travel_time.parameters(), lr=0.1)
-    
-    epoch = 1
-    for i in range(epoch):
+    # optimizer = optim.LBFGS(params=travel_time.parameters(), max_iter=1000, line_search_fn="strong_wolfe")
+    optimizer = optim.Adam(params=travel_time.parameters(), lr=0.1)
 
+    epoch = 1000
+    for i in range(epoch):
         optimizer.zero_grad()
 
-        for meta in tqdm(data_loader, desc=f"Epoch {i}"):
-
+        # for meta in tqdm(data_loader, desc=f"Epoch {i}"):
+        for meta in data_loader:
             station_index = meta["station_index"]
             event_index = meta["event_index"]
             phase_time = meta["phase_time"]
             phase_type = meta["phase_type"]
             phase_weight = meta["phase_weight"]
 
-            def closure():
-                loss = travel_time(station_index, event_index, phase_type, phase_time, phase_weight)["loss"]
-                loss.backward()
-                return loss
-            optimizer.step(closure)
+            # def closure():
+            #     loss = travel_time(station_index, event_index, phase_type, phase_time, phase_weight)["loss"]
+            #     loss.backward()
+            #     return loss
+            # optimizer.step(closure)
 
-            # loss = travel_time(station_index, event_index, phase_type, phase_time, phase_weight)["loss"]
-            # loss.backward()
-        
+            loss = travel_time(station_index, event_index, phase_type, phase_time, phase_weight)["loss"]
+            loss.backward()
+    
+        if i % 100 == 0:
+            print(f"Loss: {loss.item()}")
+
         # optimizer.step(closure)
-        # optimizer.step()
+        optimizer.step()
 
+    # %%
+    tt = travel_time(station_index, event_index, phase_type, phase_weight=phase_weight)["phase_time"]
+    print("Loss using invert location", F.mse_loss(tt, phase_time))
+    station_dt = travel_time.station_dt.weight.clone().detach().numpy()
+    print(f"station_dt: max = {np.max(station_dt)}, min = {np.min(station_dt)}, mean = {np.mean(station_dt)}")
     invert_event_loc = travel_time.event_loc.weight.clone().detach().numpy()
     invert_event_time = travel_time.event_time.weight.clone().detach().numpy()
     invert_station_dt = travel_time.station_dt.weight.clone().detach().numpy()
 
+    # %%
     plt.figure()
     # plt.scatter(station_loc[:,0], station_loc[:,1], c=tp[idx_event,:])
     plt.plot(event_loc[:, 0], event_loc[:, 1], "x", markersize=1, color="blue", label="True locations")
+    plt.scatter(station_loc[:, 0], station_loc[:, 1], c=station_dt[:,0], marker="o", linewidths=0, alpha=0.6)
+    plt.scatter(station_loc[:, 0], station_loc[:, 1]+2, c=station_dt[:,1], marker="o", linewidths=0, alpha=0.6)
+    plt.axis("scaled")
+    plt.colorbar()
     xlim = plt.xlim()
     ylim = plt.ylim()
     plt.plot(init_event_loc[:, 0], init_event_loc[:, 1], "x", markersize=1, color="green", label="Initial locations")
-    plt.plot(
-        invert_event_loc[:, 0], invert_event_loc[:, 1], "x", markersize=1, color="red", label="Inverted locations"
-    )
-    plt.scatter(station_loc[:, 0], station_loc[:, 1], c=station_dt, marker="o", alpha=0.6)
-    plt.scatter(station_loc[:, 0] + 1, station_loc[:, 1] + 1, c=invert_station_dt, marker="o", alpha=0.6)
-    plt.xlim(xlim)
-    plt.ylim(ylim)
-    plt.axis("scaled")
+    plt.plot(invert_event_loc[:, 0], invert_event_loc[:, 1], "x", markersize=1, color="red", label="Inverted locations")
+    # plt.xlim(xlim)
+    # plt.ylim(ylim)
     plt.legend()
-    plt.savefig("absolute_location.png", dpi=300)
-
-    raise
-
-    # %%
-    # travel_time = TravelTime(
-    #     num_event,
-    #     num_station,
-    #     station_loc,
-    #     station_dt=station_dt,
-    #     event_loc=event_loc,
-    #     event_time=event_time,
-    #     reg=0,
-    #     velocity={"P": vp, "S": vs},
-    # )
-
-    # tt = travel_time(station_index, event_index, phase_type)["phase_time"]
-    # print("True location: ", F.mse_loss(tt, phase_time))
-
-    # %%
-    # travel_time = TravelTime(num_event, num_station, station_loc, velocity={"P": vp, "S": vs})
-    # tt = travel_time(station_index, event_index, phase_type)["phase_time"]
-    # print("Initial loss", F.mse_loss(tt, phase_time))
-    # init_event_loc = travel_time.event_loc.weight.clone().detach().numpy()
-    # init_event_time = travel_time.event_time.weight.clone().detach().numpy()
-
-    # %%
-    # print(f"{station_index.shape = }, {event_index.shape = }, {phase_weight.shape = }, {phase_time.shape = }")
-    # print(f"{len(phase_type) = }")
-
-    # %%
-    # optimizer = optim.LBFGS(params=travel_time.parameters(), max_iter=1000, line_search_fn="strong_wolfe")
-
-    # def closure():
-    #     optimizer.zero_grad()
-    #     loss = travel_time(station_index, event_index, phase_type, phase_time, phase_weight)["loss"]
-    #     loss.backward()
-    #     return loss
-
-    # optimizer.step(closure)
-
-    # %%
-    optimizer = optim.Adam(params=travel_time.parameters(), lr=0.1)
-
-    batch_size = 1000
-    epoch = 1000
-    for i in tqdm(range(epoch)):
-        optimizer.zero_grad()
-        loss = travel_time(station_index, event_index, phase_type, phase_time, phase_weight)["loss"]
-        loss.backward()
-        optimizer.step()
-
-    tt = travel_time(station_index, event_index, phase_type)["phase_time"]
-    print("Optimized loss", F.mse_loss(tt, phase_time))
-    invert_event_loc = travel_time.event_loc.weight.clone().detach().numpy()
-    invert_event_time = travel_time.event_time.weight.clone().detach().numpy()
-    invert_station_dt = travel_time.station_dt.weight.clone().detach().numpy()
-
-    # %%
-    plt.figure()
-    # plt.scatter(station_loc[:,0], station_loc[:,1], c=tp[idx_event,:])
-    plt.plot(event_loc[:, 0], event_loc[:, 1], "x", markersize=1, color="blue", label="True locations")
-    plt.plot(init_event_loc[:, 0], init_event_loc[:, 1], "x", markersize=1, color="green", label="Initial locations")
-    plt.plot(
-        invert_event_loc[:, 0], invert_event_loc[:, 1], "x", markersize=1, color="red", label="Inverted locations"
-    )
-    plt.scatter(station_loc[:, 0], station_loc[:, 1], c=station_dt, marker="o", alpha=0.6)
-    plt.scatter(station_loc[:, 0] + 1, station_loc[:, 1] + 1, c=invert_station_dt, marker="o", alpha=0.6)
-    # plt.xlim([0, xmax])
-    # plt.ylim([0, xmax])
-    plt.axis("scaled")
-    plt.legend()
-    plt.savefig("absolute_location.png", dpi=300)
-    # plt.show()
-    # %%
-
+    plt.savefig(figure_path / "invert_location_v2.png", dpi=300, bbox_inches="tight")
 
 if __name__ == "__main__":
     args = get_args_parser().parse_args()
