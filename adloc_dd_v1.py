@@ -59,7 +59,7 @@ num_event = len(events)
 num_station = len(stations)
 vp = 6.0
 vs = vp / 1.73
-min_pair_dist = 10.0
+min_pair_dist = 5.0
 
 stations.reset_index(inplace=True, drop=True)
 stations["index"] = stations.index.values
@@ -396,11 +396,15 @@ ax[0].scatter(station_loc[:, 0], station_loc[:, 1], c=station_dt[:, 0], marker="
 ax[0].scatter(station_loc[:, 0], station_loc[:, 1] + 2, c=station_dt[:, 1], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
 ax[0].scatter(event_loc[:, 0], event_loc[:, 1], s=min(1000/len(event_loc), 10), marker=".", color="blue", linewidths=0, alpha=0.6)
 ax[0].axis("scaled")
+xlim = ax[0].get_xlim()
+ylim = ax[0].get_ylim()
 ax[0].set_title("Initial location")
 
 ax[1].scatter(station_loc[:, 0], station_loc[:, 1], c=invert_station_dt[:, 0], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
 ax[1].scatter(station_loc[:, 0], station_loc[:, 1] + 2, c=invert_station_dt[:, 1], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
 ax[1].scatter(invert_event_loc[:, 0], invert_event_loc[:, 1], s=min(1000/len(event_loc), 10),  marker=".", color="red", linewidths=0, alpha=0.6)
 ax[1].axis("scaled")
+ax[1].set_xlim(xlim)
+ax[1].set_ylim(ylim)
 ax[1].set_title("Inverted location")
 plt.savefig(figure_path / "invert_location_dd_v1_2.png", dpi=300, bbox_inches="tight")
