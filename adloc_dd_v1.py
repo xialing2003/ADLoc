@@ -11,6 +11,8 @@ from pyproj import Proj
 from torch import nn
 import torch.optim as optim
 from tqdm.auto import tqdm
+import time
+from sklearn.neighbors import NearestNeighbors
 
 # %%
 # !rm -rf test_data
@@ -35,10 +37,13 @@ config = {
 stations = pd.read_csv(data_path / "stations.csv", delimiter="\t")
 picks = pd.read_csv(data_path / "picks_gamma.csv", delimiter="\t", parse_dates=["phase_time"])
 events = pd.read_csv(data_path / "catalog_gamma.csv", delimiter="\t", parse_dates=["time"])
+print(f"Number of stations: {len(stations)}")
+print(f"Number of events: {len(events)}")
+print(f"Number of picks: {len(picks)}")
 
 # %%
-events = events[events["event_index"] < 1000]
-picks = picks[picks["event_index"] < 1000]
+events = events[events["event_index"] < 2000]
+picks = picks[picks["event_index"] < 2000]
 
 # %%
 proj = Proj(f"+proj=sterea +lon_0={config['center'][0]} +lat_0={config['center'][1]} +units=km")
@@ -54,6 +59,7 @@ num_event = len(events)
 num_station = len(stations)
 vp = 6.0
 vs = vp / 1.73
+min_pair_dist = 10.0
 
 stations.reset_index(inplace=True, drop=True)
 stations["index"] = stations.index.values
@@ -75,7 +81,7 @@ picks["phase_time"] = picks.apply(lambda x: (x["phase_time"] - event_time[x["ind
 
 # %%
 plt.figure()
-plt.scatter(stations["x_km"], stations["y_km"], s=10, marker="^")
+plt.scatter(stations["x_km"], stations["y_km"], s=10, marker="^", c="k")
 plt.scatter(events["x_km"], events["y_km"], s=1)
 plt.axis("scaled")
 plt.savefig(figure_path / "station_event_v1.png", dpi=300, bbox_inches="tight")
@@ -121,17 +127,21 @@ def generate_relative_time(picks, stations):
     phase_time = []
     phase_type = []
 
+    neigh = NearestNeighbors(radius = min_pair_dist)
+    neigh.fit(event_loc)
+
     picks_by_event = picks.groupby("index")
-    for key1, group1 in picks_by_event:
+
+    for key1, group1 in tqdm(picks_by_event, total=len(picks_by_event), desc="Generating pairs"):
+
         if key1 == -1:
             continue
-        for key2, group2 in picks_by_event:
-            if key2 == -1:
-                continue
+
+        for key2 in neigh.radius_neighbors([event_loc[key1]], return_distance=False)[0]:
             if key1 >= key2:
                 continue
-
-            common = group1.merge(group2, on=["station_id", "phase_type"], how="inner")
+        
+            common = group1.merge(picks_by_event.get_group(key2), on=["station_id", "phase_type"], how="inner")
             phase_time.append(common["phase_time_x"].values - common["phase_time_y"].values)
             phase_score.append(common["phase_score_x"].values * common["phase_score_y"].values)
             phase_type.extend(common["phase_type"].values.tolist())
@@ -307,6 +317,9 @@ print("Loss using true location (double difference): ", loss_dd.item())
 
 # %%
 optimizer = optim.Adam(params=travel_time.parameters(), lr=0.1)
+gamma_dd = num_event
+t0 = time.time()
+## TODO: regenerate pairs after N iterations
 for i in range(301):
     optimizer.zero_grad()
     loss = travel_time(
@@ -326,10 +339,12 @@ for i in range(301):
         phase_time=phase_time_dd,
         double_difference=True,
     )["loss"]
-    loss_dd.backward()
+    (loss_dd * gamma_dd).backward()
     optimizer.step()
     if i % 100 == 0:
-        print(f"Loss: {loss.item()} {loss_dd.item()}")
+        print(f"Loss: {loss.item()} {loss_dd.item()} using {time.time() - t0:.0f} seconds")
+
+print(f"Inversion using {time.time() - t0:.0f} seconds")
 
 # %%
 tt = travel_time(station_index, event_index, phase_type, phase_weight=phase_weight, double_difference=False)[
@@ -362,17 +377,30 @@ invert_station_dt = travel_time.station_dt.weight.clone().detach().numpy()
 # %%
 plt.figure()
 # plt.scatter(station_loc[:,0], station_loc[:,1], c=tp[idx_event,:])
-plt.plot(event_loc[:, 0], event_loc[:, 1], "x", markersize=1, color="blue", label="True locations")
-plt.scatter(station_loc[:, 0], station_loc[:, 1], c=station_dt[:, 0], marker="o", linewidths=0, alpha=0.6)
-plt.scatter(station_loc[:, 0], station_loc[:, 1] + 2, c=station_dt[:, 1], marker="o", linewidths=0, alpha=0.6)
+plt.plot(event_loc[:, 0], event_loc[:, 1], ".", markersize=1, color="blue", label="Initial locations")
+plt.scatter(station_loc[:, 0], station_loc[:, 1], c=station_dt[:, 0], marker="^", linewidths=0, alpha=0.6)
+plt.scatter(station_loc[:, 0], station_loc[:, 1] + 2, c=station_dt[:, 1], marker="^", linewidths=0, alpha=0.6)
 plt.axis("scaled")
 plt.colorbar()
 xlim = plt.xlim()
 ylim = plt.ylim()
 # plt.plot(init_event_loc[:, 0], init_event_loc[:, 1], "x", markersize=1, color="green", label="Initial locations")
-plt.plot(invert_event_loc[:, 0], invert_event_loc[:, 1], "x", markersize=1, color="red", label="Inverted locations")
+plt.plot(invert_event_loc[:, 0], invert_event_loc[:, 1], ".", markersize=1, color="red", label="Inverted locations")
 # plt.xlim(xlim)
 # plt.ylim(ylim)
 plt.legend()
-plt.savefig(figure_path / "invert_location_dd_v1.png", dpi=300, bbox_inches="tight")
+plt.savefig(figure_path / "invert_location_dd_v1_1.png", dpi=300, bbox_inches="tight")
 # %%
+fig, ax = plt.subplots(1,2)
+ax[0].scatter(station_loc[:, 0], station_loc[:, 1], c=station_dt[:, 0], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
+ax[0].scatter(station_loc[:, 0], station_loc[:, 1] + 2, c=station_dt[:, 1], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
+ax[0].scatter(event_loc[:, 0], event_loc[:, 1], s=min(1000/len(event_loc), 10), marker=".", color="blue", linewidths=0, alpha=0.6)
+ax[0].axis("scaled")
+ax[0].set_title("Initial location")
+
+ax[1].scatter(station_loc[:, 0], station_loc[:, 1], c=invert_station_dt[:, 0], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
+ax[1].scatter(station_loc[:, 0], station_loc[:, 1] + 2, c=invert_station_dt[:, 1], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
+ax[1].scatter(invert_event_loc[:, 0], invert_event_loc[:, 1], s=min(1000/len(event_loc), 10),  marker=".", color="red", linewidths=0, alpha=0.6)
+ax[1].axis("scaled")
+ax[1].set_title("Inverted location")
+plt.savefig(figure_path / "invert_location_dd_v1_2.png", dpi=300, bbox_inches="tight")
