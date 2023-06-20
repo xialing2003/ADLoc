@@ -42,8 +42,8 @@ print(f"Number of events: {len(events)}")
 print(f"Number of picks: {len(picks)}")
 
 # %%
-events = events[events["event_index"] < 2000]
-picks = picks[picks["event_index"] < 2000]
+# events = events[events["event_index"] < 200]
+# picks = picks[picks["event_index"] < 200]
 
 # %%
 proj = Proj(f"+proj=sterea +lon_0={config['center'][0]} +lat_0={config['center'][1]} +units=km")
@@ -59,7 +59,8 @@ num_event = len(events)
 num_station = len(stations)
 vp = 6.0
 vs = vp / 1.73
-min_pair_dist = 5.0
+MIN_PAIR_DIST = 3.0
+MAX_TIME_RES = 0.3
 
 stations.reset_index(inplace=True, drop=True)
 stations["index"] = stations.index.values
@@ -127,7 +128,7 @@ def generate_relative_time(picks, stations):
     phase_time = []
     phase_type = []
 
-    neigh = NearestNeighbors(radius = min_pair_dist)
+    neigh = NearestNeighbors(radius = MIN_PAIR_DIST)
     neigh.fit(event_loc)
 
     picks_by_event = picks.groupby("index")
@@ -375,17 +376,38 @@ invert_event_time = travel_time.event_time.weight.clone().detach().numpy()
 invert_station_dt = travel_time.station_dt.weight.clone().detach().numpy()
 
 # %%
+pred_phase_time = travel_time(
+    station_index,
+    event_index,
+    phase_type,
+    phase_weight=phase_weight,
+    double_difference=False,
+)["phase_time"]
+
+res_event = torch.zeros(num_event)
+res_phase = pred_phase_time - phase_time
+tmp = event_index.squeeze()
+for i in tqdm(range(num_event)):
+    res = res_phase[tmp == i]
+    if len(res) == 0:
+        res_event[i] = torch.inf
+    else:
+        res_event[i] = torch.mean(torch.abs(res))
+
+
+# %%
 plt.figure()
+idx = (res_event < MAX_TIME_RES)
 # plt.scatter(station_loc[:,0], station_loc[:,1], c=tp[idx_event,:])
-plt.plot(event_loc[:, 0], event_loc[:, 1], ".", markersize=1, color="blue", label="Initial locations")
-plt.scatter(station_loc[:, 0], station_loc[:, 1], c=station_dt[:, 0], marker="^", linewidths=0, alpha=0.6)
-plt.scatter(station_loc[:, 0], station_loc[:, 1] + 2, c=station_dt[:, 1], marker="^", linewidths=0, alpha=0.6)
+plt.plot(event_loc[:, 0], event_loc[:, 1], ".", markersize=0.5, color="blue", label="Initial locations")
+plt.scatter(station_loc[:, 0], station_loc[:, 1], c=station_dt[:, 0], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
+plt.scatter(station_loc[:, 0], station_loc[:, 1] + 2, c=station_dt[:, 1], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
 plt.axis("scaled")
 plt.colorbar()
 xlim = plt.xlim()
 ylim = plt.ylim()
 # plt.plot(init_event_loc[:, 0], init_event_loc[:, 1], "x", markersize=1, color="green", label="Initial locations")
-plt.plot(invert_event_loc[:, 0], invert_event_loc[:, 1], ".", markersize=1, color="red", label="Inverted locations")
+plt.plot(invert_event_loc[idx, 0], invert_event_loc[idx, 1], ".", markersize=0.5, color="red", label="Inverted locations")
 # plt.xlim(xlim)
 # plt.ylim(ylim)
 plt.legend()
@@ -394,7 +416,7 @@ plt.savefig(figure_path / "invert_location_dd_v1_1.png", dpi=300, bbox_inches="t
 fig, ax = plt.subplots(1,2)
 ax[0].scatter(station_loc[:, 0], station_loc[:, 1], c=station_dt[:, 0], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
 ax[0].scatter(station_loc[:, 0], station_loc[:, 1] + 2, c=station_dt[:, 1], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
-ax[0].scatter(event_loc[:, 0], event_loc[:, 1], s=min(1000/len(event_loc), 10), marker=".", color="blue", linewidths=0, alpha=0.6)
+ax[0].scatter(event_loc[idx, 0], event_loc[idx, 1], s=min(1000/len(event_loc), 10), marker=".", color="blue", linewidths=0, alpha=0.6)
 ax[0].axis("scaled")
 xlim = ax[0].get_xlim()
 ylim = ax[0].get_ylim()
@@ -402,7 +424,7 @@ ax[0].set_title("Initial location")
 
 ax[1].scatter(station_loc[:, 0], station_loc[:, 1], c=invert_station_dt[:, 0], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
 ax[1].scatter(station_loc[:, 0], station_loc[:, 1] + 2, c=invert_station_dt[:, 1], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
-ax[1].scatter(invert_event_loc[:, 0], invert_event_loc[:, 1], s=min(1000/len(event_loc), 10),  marker=".", color="red", linewidths=0, alpha=0.6)
+ax[1].scatter(invert_event_loc[idx, 0], invert_event_loc[idx, 1], s=min(1000/len(event_loc), 10),  marker=".", color="red", linewidths=0, alpha=0.6)
 ax[1].axis("scaled")
 ax[1].set_xlim(xlim)
 ax[1].set_ylim(ylim)

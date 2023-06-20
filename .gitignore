@@ -1,3 +1,8 @@
 figures
 test_data
 *.zip
+*.pyc
+.DS_Store
+dist/
+ADLoc.egg-info
+
