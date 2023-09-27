@@ -13,6 +13,12 @@ import torch.optim as optim
 from tqdm.auto import tqdm
 import utils
 from torch.utils.data import Dataset, DataLoader
+import shelve
+from adloc.seismic_ops import eikonal_solve
+from adloc.travel_time import CalcTravelTime
+
+torch.manual_seed(0)
+np.random.seed(0)
 
 
 def get_args_parser(add_help=True):
@@ -168,6 +174,85 @@ class PhaseDataset:
 
 
 # %%
+def initialize_eikonal(config):
+    path = Path("./eikonal")
+    path.mkdir(exist_ok=True)
+    rlim = [0, np.sqrt((config["xlim"][1] - config["xlim"][0]) ** 2 + (config["ylim"][1] - config["ylim"][0]) ** 2)]
+    zlim = config["zlim"]
+    h = config["h"]
+
+    filename = f"timetable_{rlim[0]:.0f}_{rlim[1]:.0f}_{zlim[0]:.0f}_{zlim[1]:.0f}_{h:.3f}"
+    if (path / (filename + ".dir")).is_file():
+        print("Loading precomputed timetable...")
+        with shelve.open(str(path / filename)) as db:
+            up = db["up"]
+            us = db["us"]
+            grad_up = db["grad_up"]
+            grad_us = db["grad_us"]
+            rgrid = db["rgrid"]
+            zgrid = db["zgrid"]
+            nr = db["nr"]
+            nz = db["nz"]
+            h = db["h"]
+    else:
+        edge_grids = 0
+
+        rgrid = np.arange(rlim[0] - edge_grids * h, rlim[1], h)
+        zgrid = np.arange(zlim[0] - edge_grids * h, zlim[1], h)
+        nr, nz = len(rgrid), len(zgrid)
+
+        vel = config["vel"]
+        zz, vp, vs = vel["z"], vel["p"], vel["s"]
+        vp1d = np.interp(zgrid, zz, vp)
+        vs1d = np.interp(zgrid, zz, vs)
+        vp = np.ones((nr, nz)) * vp1d
+        vs = np.ones((nr, nz)) * vs1d
+
+        up = 1000.0 * np.ones((nr, nz))
+        up[edge_grids, edge_grids] = 0.0
+        up = eikonal_solve(up, vp, h)
+
+        grad_up = np.gradient(up, h)
+
+        us = 1000.0 * np.ones((nr, nz))
+        us[edge_grids, edge_grids] = 0.0
+        us = eikonal_solve(us, vs, h)
+
+        grad_us = np.gradient(us, h)
+
+        with shelve.open(str(path / filename)) as db:
+            db["up"] = up
+            db["us"] = us
+            db["grad_up"] = grad_up
+            db["grad_us"] = grad_us
+            db["rgrid"] = rgrid
+            db["zgrid"] = zgrid
+            db["nr"] = nr
+            db["nz"] = nz
+            db["h"] = h
+
+    up = up.flatten()
+    us = us.flatten()
+    grad_up = np.array([grad_up[0].flatten(), grad_up[1].flatten()])
+    grad_us = np.array([grad_us[0].flatten(), grad_us[1].flatten()])
+    config.update(
+        {
+            "up": up,
+            "us": us,
+            "grad_up": grad_up,
+            "grad_us": grad_us,
+            "rgrid": rgrid,
+            "zgrid": zgrid,
+            "nr": nr,
+            "nz": nz,
+            "h": h,
+        }
+    )
+
+    return config
+
+
+# %%
 class TravelTime(nn.Module):
     def __init__(
         self,
@@ -179,6 +264,7 @@ class TravelTime(nn.Module):
         event_time=None,
         reg=0.1,
         velocity={"P": 6.0, "S": 6.0 / 1.73},
+        eikonal=None,
         dtype=torch.float32,
     ):
         super().__init__()
@@ -196,20 +282,36 @@ class TravelTime(nn.Module):
             )  # , requires_grad=False)
         # self.register_buffer("station_loc", torch.tensor(station_loc, dtype=dtype))
         self.velocity = [velocity["P"], velocity["S"]]
+
         self.reg = reg
         if event_loc is not None:
             self.event_loc.weight = torch.nn.Parameter(torch.tensor(event_loc, dtype=dtype).contiguous())
         if event_time is not None:
             self.event_time.weight = torch.nn.Parameter(torch.tensor(event_time, dtype=dtype).contiguous())
+        if eikonal is not None:
+            self.eikonal = eikonal
 
     def calc_time(self, event_loc, station_loc, phase_type):
-        dist = torch.linalg.norm(event_loc - station_loc, axis=-1, keepdim=True)
-        # velocity = torch.tensor([self.velocity[p] for p in phase_type]).unsqueeze(-1)
-        # tt = dist / velocity
-        # if isinstance(self.velocity, dict):
-        #     self.velocity = torch.tensor([vel[p.upper()] for p in phase_type]).unsqueeze(-1)
-        # tt = dist / self.velocity
-        tt = dist / self.velocity[phase_type]
+        if self.eikonal is None:
+            dist = torch.linalg.norm(event_loc - station_loc, axis=-1, keepdim=True)
+            tt = dist / self.velocity[phase_type]
+
+        else:
+            ## eikonal
+            r = torch.linalg.norm(event_loc[:, :2] - station_loc[:, :2], axis=-1, keepdims=False)
+            z = event_loc[:, 2] - station_loc[:, 2]
+
+            timetable = self.eikonal["up"] if phase_type == 0 else self.eikonal["us"]
+            rgrid0 = self.eikonal["rgrid"][0]
+            zgrid0 = self.eikonal["zgrid"][0]
+            nr = self.eikonal["nr"]
+            nz = self.eikonal["nz"]
+            h = self.eikonal["h"]
+            tt = CalcTravelTime.apply(r, z, timetable, rgrid0, zgrid0, nr, nz, h)
+
+            tt = tt.float()
+            tt = tt.unsqueeze(-1)
+
         return tt
 
     def forward(
@@ -268,6 +370,27 @@ def main(args):
         "starttime": datetime(2019, 7, 4, 17, 0),
         "endtime": datetime(2019, 7, 5, 0, 0),
     }
+
+    ## Eikonal for 1D velocity model
+    zz = [0.0, 5.5, 16.0, 32.0]
+    vp = [5.5, 5.5, 6.7, 7.8]
+    # zz = [0.0, 32.0]
+    # vp = [6.0, 6.0]
+    vp_vs_ratio = 1.73
+    vs = [v / vp_vs_ratio for v in vp]
+    h = 1.0
+    # h = 3
+    vel = {"z": zz, "p": vp, "s": vs}
+    config["x(km)"] = (
+        (np.array(config["xlim_degree"]) - np.array(config["center"][0]))
+        * config["degree2km"]
+        * np.cos(np.deg2rad(config["center"][1]))
+    )
+    config["y(km)"] = (np.array(config["ylim_degree"]) - np.array(config["center"][1])) * config["degree2km"]
+    config["z(km)"] = (0, 20)
+    config["eikonal"] = {"vel": vel, "h": h, "xlim": config["x(km)"], "ylim": config["y(km)"], "zlim": config["z(km)"]}
+
+    eikonal = initialize_eikonal(config["eikonal"])
 
     # %%
     stations = pd.read_csv(data_path / "stations.csv", delimiter="\t")
@@ -359,7 +482,9 @@ def main(args):
 
     #####################################
 
-    travel_time = TravelTime(num_event, num_station, station_loc, event_time=event_time, velocity={"P": vp, "S": vs})
+    travel_time = TravelTime(
+        num_event, num_station, station_loc, event_time=event_time, velocity={"P": vp, "S": vs}, eikonal=eikonal
+    )
     tt = travel_time(station_index, event_index, phase_type, phase_weight=phase_weight)["phase_time"]
     print("Loss using init location", F.mse_loss(tt, phase_time))
     init_event_loc = travel_time.event_loc.weight.clone().detach().numpy()
@@ -367,7 +492,6 @@ def main(args):
 
     # optimizer = optim.LBFGS(params=travel_time.parameters(), max_iter=1000, line_search_fn="strong_wolfe")
     optimizer = optim.Adam(params=travel_time.parameters(), lr=0.1)
-
     epoch = 1000
     for i in range(epoch):
         optimizer.zero_grad()
@@ -384,12 +508,14 @@ def main(args):
             #     loss = travel_time(station_index, event_index, phase_type, phase_time, phase_weight)["loss"]
             #     loss.backward()
             #     return loss
+
             # optimizer.step(closure)
 
             loss = travel_time(station_index, event_index, phase_type, phase_time, phase_weight)["loss"]
             loss.backward()
 
         if i % 100 == 0:
+            loss = travel_time(station_index, event_index, phase_type, phase_time, phase_weight)["loss"]
             print(f"Loss: {loss.item()}")
 
         # optimizer.step(closure)
@@ -420,8 +546,10 @@ def main(args):
     # plt.ylim(ylim)
     plt.legend()
     plt.savefig(figure_path / "invert_location_v2.png", dpi=300, bbox_inches="tight")
+    # plt.show()
 
 
 if __name__ == "__main__":
     args = get_args_parser().parse_args()
+
     main(args)

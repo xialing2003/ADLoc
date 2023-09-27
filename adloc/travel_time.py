@@ -33,6 +33,8 @@ def test_get_index():
 def _interp(time_table, r, z, rgrid0, zgrid0, nr, nz, h):
     ir0 = np.floor((r - rgrid0) / h).clip(0, nr - 2).astype(np.int64)
     iz0 = np.floor((z - zgrid0) / h).clip(0, nz - 2).astype(np.int64)
+    # ir0 = torch.floor((r - rgrid0) / h).clamp(0, nr - 2).to(torch.int64)
+    # iz0 = torch.floor((z - zgrid0) / h).clamp(0, nz - 2).to(torch.int64)
     ir1 = ir0 + 1
     iz1 = iz0 + 1
 
@@ -62,16 +64,32 @@ def _interp(time_table, r, z, rgrid0, zgrid0, nr, nz, h):
     return t
 
 
-class TravelTime(Function):
+def grad(x, dim=0, h=1.0):
+    if dim == 0:
+        prepend = x[0:1, :]
+        append = x[-1:, :]
+    elif dim == 1:
+        prepend = x[:, 0:1]
+        append = x[:, -1:]
+    grad_left = torch.diff(x, dim=dim, prepend=prepend) / h
+    grad_right = torch.diff(x, dim=dim, append=append) / h
+    grad = 0.5 * (grad_right + grad_left)
+    return grad
+
+
+class CalcTravelTime(Function):
     @staticmethod
     def forward(r, z, timetable, rgrid0, zgrid0, nr, nz, h):
-        tt = _interp(timetable.numpy(), r.numpy(), z.numpy(), rgrid0, zgrid0, nr, nz, h)
+        # tt = _interp(timetable.numpy(), r.numpy(), z.numpy(), rgrid0, zgrid0, nr, nz, h)
+        tt = _interp(timetable, r.numpy(), z.numpy(), rgrid0, zgrid0, nr, nz, h)
         tt = torch.from_numpy(tt)
+        # tt = _interp(timetable, r, z, rgrid0, zgrid0, nr, nz, h)
         return tt
 
     @staticmethod
     def setup_context(ctx, inputs, output):
         r, z, timetable, rgrid0, zgrid0, nr, nz, h = inputs
+        ctx.save_for_backward(r, z)
         ctx.timetable = timetable
         ctx.rgrid0 = rgrid0
         ctx.zgrid0 = zgrid0
@@ -87,17 +105,26 @@ class TravelTime(Function):
         nr = ctx.nr
         nz = ctx.nz
         h = ctx.h
+        r, z = ctx.saved_tensors
 
         grad_r = grad_z = grad_timetable = grad_rgrid0 = grad_zgrid0 = grad_nr = grad_nz = grad_h = None
 
-        timetable = timetable.numpy().reshape(nr, nz)
+        # timetable = timetable.numpy().reshape(nr, nz)
+        timetable = timetable.reshape(nr, nz)
         grad_time_r, grad_time_z = np.gradient(timetable, h, edge_order=2)
         grad_time_r = grad_time_r.flatten()
         grad_time_z = grad_time_z.flatten()
         grad_r = _interp(grad_time_r, r.numpy(), z.numpy(), rgrid0, zgrid0, nr, nz, h)
         grad_z = _interp(grad_time_z, r.numpy(), z.numpy(), rgrid0, zgrid0, nr, nz, h)
-        grad_r = torch.from_numpy(grad_r)
-        grad_z = torch.from_numpy(grad_z)
+
+        grad_r = torch.from_numpy(grad_r) * grad_output
+        grad_z = torch.from_numpy(grad_z) * grad_output
+
+        # timetable = timetable.view(nr, nz)
+        # grad_r = grad(timetable, dim=0, h=h).flatten()
+        # grad_z = grad(timetable, dim=1, h=h).flatten()
+        # grad_r = _interp(grad_r, r, z, rgrid0, zgrid0, nr, nz, h)
+        # grad_z = _interp(grad_z, r, z, rgrid0, zgrid0, nr, nz, h)
 
         return grad_r, grad_z, grad_timetable, grad_rgrid0, grad_zgrid0, grad_nr, grad_nz, grad_h
 
@@ -113,7 +140,7 @@ class Test(nn.Module):
         self.h = h
 
     def forward(self, r, z):
-        tt = TravelTime.apply(r, z, self.timetable, self.rgrid0, self.zgrid0, self.nr, self.nz, self.h)
+        tt = CalcTravelTime.apply(r, z, self.timetable, self.rgrid0, self.zgrid0, self.nr, self.nz, self.h)
         return tt
 
 
@@ -129,12 +156,13 @@ if __name__ == "__main__":
     r = rgrid0 + h * np.arange(0, nr0)
     z = zgrid0 + h * np.arange(0, nz0)
     r, z = np.meshgrid(r, z, indexing="ij")
-    timetalbe = np.sqrt(r**2 + z**2)
-    timetable = torch.from_numpy(timetalbe.flatten())
-    grad_r, grad_z = np.gradient(timetalbe, h, edge_order=2)
+    timetable = np.sqrt(r**2 + z**2)
+    grad_r, grad_z = np.gradient(timetable, h, edge_order=2)
+    # timetable = torch.from_numpy(timetable.flatten())
+    timetable = timetable.flatten()
 
-    nr = 10000
-    nz = 10000
+    nr = 1000
+    nz = 1000
     r = torch.linspace(0, 20, nr)
     z = torch.linspace(0, 20, nz)
     r, z = torch.meshgrid(r, z, indexing="ij")
