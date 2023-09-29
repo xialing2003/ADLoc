@@ -5,4 +5,5 @@ test_data
 .DS_Store
 dist/
 ADLoc.egg-info
+eikonal/
 

@@ -14,6 +14,9 @@ from tqdm.auto import tqdm
 import time
 from sklearn.neighbors import NearestNeighbors
 
+torch.manual_seed(0)
+np.random.seed(0)
+
 # %%
 # !rm -rf test_data
 # !wget https://github.com/zhuwq0/ADLoc/releases/download/test_data/test_data.zip
@@ -42,8 +45,8 @@ print(f"Number of events: {len(events)}")
 print(f"Number of picks: {len(picks)}")
 
 # %%
-# events = events[events["event_index"] < 200]
-# picks = picks[picks["event_index"] < 200]
+# events = events[events["event_index"] < 100]
+# picks = picks[picks["event_index"] < 100]
 
 # %%
 proj = Proj(f"+proj=sterea +lon_0={config['center'][0]} +lat_0={config['center'][1]} +units=km")
@@ -128,20 +131,19 @@ def generate_relative_time(picks, stations):
     phase_time = []
     phase_type = []
 
-    neigh = NearestNeighbors(radius = MIN_PAIR_DIST)
+    neigh = NearestNeighbors(radius=MIN_PAIR_DIST)
     neigh.fit(event_loc)
 
     picks_by_event = picks.groupby("index")
 
     for key1, group1 in tqdm(picks_by_event, total=len(picks_by_event), desc="Generating pairs"):
-
         if key1 == -1:
             continue
 
         for key2 in neigh.radius_neighbors([event_loc[key1]], return_distance=False)[0]:
             if key1 >= key2:
                 continue
-        
+
             common = group1.merge(picks_by_event.get_group(key2), on=["station_id", "phase_type"], how="inner")
             phase_time.append(common["phase_time_x"].values - common["phase_time_y"].values)
             phase_score.append(common["phase_score_x"].values * common["phase_score_y"].values)
@@ -193,9 +195,7 @@ class TravelTime(nn.Module):
         self.station_dt = nn.Embedding(num_station, 2)  # vp, vs
         self.station_loc.weight = torch.nn.Parameter(torch.tensor(station_loc, dtype=dtype), requires_grad=False)
         if station_dt is not None:
-            self.station_dt.weight = torch.nn.Parameter(
-                torch.tensor(station_dt, dtype=dtype)
-            )  # , requires_grad=False)
+            self.station_dt.weight = torch.nn.Parameter(torch.tensor(station_dt, dtype=dtype))  # , requires_grad=False)
         else:
             self.station_dt.weight = torch.nn.Parameter(
                 torch.zeros(num_station, 2, dtype=dtype)
@@ -397,34 +397,76 @@ for i in tqdm(range(num_event)):
 
 # %%
 plt.figure()
-idx = (res_event < MAX_TIME_RES)
+idx = res_event < MAX_TIME_RES
 # plt.scatter(station_loc[:,0], station_loc[:,1], c=tp[idx_event,:])
 plt.plot(event_loc[:, 0], event_loc[:, 1], ".", markersize=0.5, color="blue", label="Initial locations")
-plt.scatter(station_loc[:, 0], station_loc[:, 1], c=station_dt[:, 0], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
-plt.scatter(station_loc[:, 0], station_loc[:, 1] + 2, c=station_dt[:, 1], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
+plt.scatter(
+    station_loc[:, 0], station_loc[:, 1], c=station_dt[:, 0], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r"
+)
+plt.scatter(
+    station_loc[:, 0], station_loc[:, 1] + 2, c=station_dt[:, 1], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r"
+)
 plt.axis("scaled")
 plt.colorbar()
 xlim = plt.xlim()
 ylim = plt.ylim()
 # plt.plot(init_event_loc[:, 0], init_event_loc[:, 1], "x", markersize=1, color="green", label="Initial locations")
-plt.plot(invert_event_loc[idx, 0], invert_event_loc[idx, 1], ".", markersize=0.5, color="red", label="Inverted locations")
+plt.plot(
+    invert_event_loc[idx, 0], invert_event_loc[idx, 1], ".", markersize=0.5, color="red", label="Inverted locations"
+)
 # plt.xlim(xlim)
 # plt.ylim(ylim)
 plt.legend()
 plt.savefig(figure_path / "invert_location_dd_v1_1.png", dpi=300, bbox_inches="tight")
 # %%
-fig, ax = plt.subplots(1,2)
-ax[0].scatter(station_loc[:, 0], station_loc[:, 1], c=station_dt[:, 0], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
-ax[0].scatter(station_loc[:, 0], station_loc[:, 1] + 2, c=station_dt[:, 1], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
-ax[0].scatter(event_loc[idx, 0], event_loc[idx, 1], s=min(1000/len(event_loc), 10), marker=".", color="blue", linewidths=0, alpha=0.6)
+fig, ax = plt.subplots(1, 2)
+ax[0].scatter(
+    station_loc[:, 0], station_loc[:, 1], c=station_dt[:, 0], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r"
+)
+ax[0].scatter(
+    station_loc[:, 0], station_loc[:, 1] + 2, c=station_dt[:, 1], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r"
+)
+ax[0].scatter(
+    event_loc[idx, 0],
+    event_loc[idx, 1],
+    s=min(1000 / len(event_loc), 10),
+    marker=".",
+    color="blue",
+    linewidths=0,
+    alpha=0.6,
+)
 ax[0].axis("scaled")
 xlim = ax[0].get_xlim()
 ylim = ax[0].get_ylim()
 ax[0].set_title("Initial location")
 
-ax[1].scatter(station_loc[:, 0], station_loc[:, 1], c=invert_station_dt[:, 0], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
-ax[1].scatter(station_loc[:, 0], station_loc[:, 1] + 2, c=invert_station_dt[:, 1], marker="^", linewidths=0, alpha=0.6, cmap="viridis_r")
-ax[1].scatter(invert_event_loc[idx, 0], invert_event_loc[idx, 1], s=min(1000/len(event_loc), 10),  marker=".", color="red", linewidths=0, alpha=0.6)
+ax[1].scatter(
+    station_loc[:, 0],
+    station_loc[:, 1],
+    c=invert_station_dt[:, 0],
+    marker="^",
+    linewidths=0,
+    alpha=0.6,
+    cmap="viridis_r",
+)
+ax[1].scatter(
+    station_loc[:, 0],
+    station_loc[:, 1] + 2,
+    c=invert_station_dt[:, 1],
+    marker="^",
+    linewidths=0,
+    alpha=0.6,
+    cmap="viridis_r",
+)
+ax[1].scatter(
+    invert_event_loc[idx, 0],
+    invert_event_loc[idx, 1],
+    s=min(1000 / len(event_loc), 10),
+    marker=".",
+    color="red",
+    linewidths=0,
+    alpha=0.6,
+)
 ax[1].axis("scaled")
 ax[1].set_xlim(xlim)
 ax[1].set_ylim(ylim)

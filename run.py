@@ -129,46 +129,6 @@ class PhaseDataset(Dataset):
         return 1
 
     def read_data(self):
-        # event_index = []
-        # station_index = []
-        # phase_score = []
-        # phase_time = []
-        # phase_type = []
-
-        # for i in range(len(self.events)):
-        #     phase_time.append(
-        #         self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]["phase_time"].values
-        #     )
-        #     phase_score.append(
-        #         self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]["phase_score"].values
-        #     )
-        #     phase_type.extend(
-        #         self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]["phase_type"].values.tolist()
-        #     )
-        #     event_index.extend([i] * len(self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]))
-        #     station_index.append(
-        #         self.stations.loc[
-        #             self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]["station_id"],
-        #             "index",
-        #         ].values
-        #     )
-
-        # phase_time = np.concatenate(phase_time)
-        # phase_score = np.concatenate(phase_score)
-        # phase_type = np.array([{"P": 0, "S": 1}[x.upper()] for x in phase_type])
-        # event_index = np.array(event_index)
-        # station_index = np.concatenate(station_index)
-
-        # self.station_index = torch.tensor(station_index, dtype=torch.long)
-        # self.event_index = torch.tensor(event_index, dtype=torch.long)
-        # self.phase_weight = torch.tensor(phase_score, dtype=torch.float32)
-        # self.phase_time = torch.tensor(phase_time[:, np.newaxis], dtype=torch.float32)
-        # self.phase_type = torch.tensor(phase_type, dtype=torch.long)
-
-        # print(
-        #     f"{self.station_index.shape = }, {self.event_index.shape = }, {self.phase_weight.shape = }, {self.phase_time.shape = }, {self.phase_type.shape = }"
-        # )
-
         event_index = []
         station_index = []
         phase_score = []
@@ -196,10 +156,6 @@ class PhaseDataset(Dataset):
         self.phase_weight = torch.tensor(phase_score, dtype=torch.float32)
         self.phase_time = torch.tensor(phase_time, dtype=torch.float32)
         self.phase_type = torch.tensor(phase_type, dtype=torch.long)
-
-        # print(
-        #     f"{self.station_index.shape = }, {self.event_index.shape = }, {self.phase_weight.shape = }, {self.phase_time.shape = }, {self.phase_type.shape = }"
-        # )
 
     def read_data_dd(self):
         event_index = []
@@ -307,11 +263,6 @@ class TravelTime(nn.Module):
             dist = torch.linalg.norm(event_loc - station_loc, axis=-1, keepdim=True)
             tt = dist / self.velocity[phase_type]
             tt = tt.float()
-            # tt = tt.unsqueeze(-1)
-            # print(f"{event_loc[:10] = }")
-            # print(f"{station_loc[:10] = }")
-            # print(f"{tt[:10] = }")
-            # raise
         else:
             if double_difference:
                 nb1, ne1, nc1 = event_loc.shape  # batch, event, xyz
@@ -357,15 +308,11 @@ class TravelTime(nn.Module):
             event_index_ = event_index[phase_type == type]  # (nb,)
             phase_weight_ = phase_weight[phase_type == type]  # (nb,)
 
-            # print(f"{event_index_.shape = }")
-
             station_loc_ = self.station_loc(station_index_)  # (nb, 3)
             station_dt_ = self.station_dt(station_index_)[:, [type]]  # (nb, 1)
 
             event_loc_ = self.event_loc(event_index_)  # (nb, 3)
             event_time_ = self.event_time(event_index_)  # (nb, 1)
-
-            # print(f"{station_loc_.shape = }, {event_loc_.shape = }, {station_dt_.shape = }, {event_time_.shape = }")
 
             if double_difference:
                 station_loc_ = station_loc_.unsqueeze(1)  # (nb, 1, 3)
@@ -375,15 +322,7 @@ class TravelTime(nn.Module):
                 event_loc_, station_loc_, type, double_difference=double_difference
             )  # (nb, 1) or (nb, 2) for double_difference
 
-            # print(f"{tt_.shape = }")
-
-            # print(f"{event_time_.shape = }, {tt_.shape = }, {station_dt_.shape = }")
-
             t_ = event_time_ + tt_ + station_dt_  # (nb, 1) or (nb, 2, 1) for double_difference
-
-            # print(f"{event_time_[:10] = }")
-            # print(f"{tt_[:10] = }")
-            # print(f"{station_dt_[:10] = }")
 
             if double_difference:
                 t_ = t_[:, 0] - t_[:, 1]  # (nb, 1)
@@ -398,30 +337,10 @@ class TravelTime(nn.Module):
                 if double_difference:
                     loss += torch.mean(F.huber_loss(t_, phase_time_, reduction="none") * phase_weight_)
                 else:
-                    # loss = torch.mean(phase_weight * (t - phase_time) ** 2)
-                    # loss += torch.mean(
-                    #     F.huber_loss(tt_ + station_dt_, phase_time_ - event_time_, reduction="none") * phase_weight_
-                    # )
                     loss += torch.mean(F.huber_loss(t_, phase_time_, reduction="none") * phase_weight_)
-
-                    # print(f"{t_.shape = }, {phase_time_.shape = }, {phase_weight_.shape = }")
-                    # loss += self.reg * torch.mean(
-                    #     torch.abs(station_dt_)
-                    # )  ## prevent the trade-off between station_dt and event_time
-
-                    # tmp = F.huber_loss(tt_ + station_dt_, phase_time_ - event_time_, reduction="none")
-
-                    # print(f"{tmp[:10] = }")
-                    # print(f"{tmp.shape = } {phase_weight_.shape = }")
-                    # print(f"{phase_weight_[:10] = }")
-                    # print(torch.mean(tmp * phase_weight_))
-                    # print(phase_weight_.dtype)
-                    # raise
-
-                    # print(f"{(tt_ + station_dt_)[:10] = }")
-                    # print(f"{(phase_time_ - event_time_)[:10] = }")
-                    # print(f"{loss = }")
-                    # raise
+                    loss += self.reg * torch.mean(
+                        torch.abs(station_dt_)
+                    )  ## prevent the trade-off between station_dt and event_time
 
         return {"phase_time": pred_time, "loss": loss}
 
@@ -607,12 +526,6 @@ def main(args):
             )["loss"]
             loss.backward()
 
-            # print(f"{station_index[:10] = }, {event_index[:10] = }, {phase_type[:10] = }, {phase_weight[:10] = }")
-            # print(f"{travel_time.event_loc.weight[:10] = }")
-            # print(f"{travel_time.event_time.weight[:10] = }")
-            # print(f"{loss = }")
-            # raise
-
         if args.double_difference:
             for meta in data_loader_dd:
                 station_index = meta["station_index"]
@@ -670,7 +583,7 @@ def main(args):
     # plt.xlim(xlim)
     # plt.ylim(ylim)
     plt.legend()
-    plt.savefig(figure_path / "invert_location_v3.png", dpi=300, bbox_inches="tight")
+    plt.savefig(figure_path / "invert_location.png", dpi=300, bbox_inches="tight")
     # plt.show()
 
 
