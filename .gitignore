@@ -3,6 +3,7 @@ test_data
 *.zip
 *.pyc
 .DS_Store
+*.csv
 dist/
 ADLoc.egg-info
 eikonal/

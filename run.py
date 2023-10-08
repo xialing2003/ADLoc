@@ -4,6 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 import torch.optim as optim
 from matplotlib import pyplot as plt
@@ -27,18 +28,18 @@ def get_args_parser(add_help=True):
     parser.add_argument("-dd", "--double_difference", action="store_true", help="Use double difference")
     parser.add_argument("--eikonal", action="store_true", help="Use eikonal")
     parser.add_argument("--dd_weight", default=1.0, type=float, help="weight for double difference")
-    parser.add_argument("--min_pair_dist", default=3.0, type=float, help="minimum distance between pairs")
+    parser.add_argument("--min_pair_dist", default=20.0, type=float, help="minimum distance between pairs")
     parser.add_argument("--max_time_res", default=0.5, type=float, help="maximum time residual")
 
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
         "-b", "--batch-size", default=2, type=int, help="images per gpu, the total batch size is $NGPU x batch_size"
     )
-    parser.add_argument("--epochs", default=26, type=int, metavar="N", help="number of total epochs to run")
+    parser.add_argument("--epochs", default=30, type=int, metavar="N", help="number of total epochs to run")
     parser.add_argument(
         "-j", "--workers", default=0, type=int, metavar="N", help="number of data loading workers (default: 4)"
     )
-    parser.add_argument("--opt", default="sgd", type=str, help="optimizer")
+    parser.add_argument("--opt", default="lbfgs", type=str, help="optimizer")
     parser.add_argument(
         "--lr",
         default=0.02,
@@ -112,7 +113,7 @@ def get_args_parser(add_help=True):
 
 def main(args):
     # %%
-    data_path = Path("test_data")
+    data_path = Path("tests")
     figure_path = Path("figures")
     figure_path.mkdir(exist_ok=True)
 
@@ -147,27 +148,24 @@ def main(args):
     else:
         eikonal = None
 
-    # %%
-    stations = pd.read_csv(data_path / "stations.csv", delimiter="\t")
-    picks = pd.read_csv(data_path / "picks_gamma.csv", delimiter="\t", parse_dates=["phase_time"])
-    events = pd.read_csv(data_path / "catalog_gamma.csv", delimiter="\t", parse_dates=["time"])
-
-    events = events[events["event_index"] < 100]
-    picks = picks[picks["event_index"] < 100]
+    # %% TODO: Convert to args
+    stations = pd.read_csv(data_path / "stations.csv")
+    picks = pd.read_csv(data_path / "picks.csv", parse_dates=["phase_time"])
+    events = pd.read_csv(data_path / "events.csv", parse_dates=["time"])
 
     # %%
     proj = Proj(f"+proj=sterea +lon_0={config['center'][0]} +lat_0={config['center'][1]} +units=km")
     stations[["x_km", "y_km"]] = stations.apply(
         lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
     )
-    stations["z_km"] = stations["elevation(m)"].apply(lambda x: -x / 1e3)
+    stations["z_km"] = stations["depth_km"]
     # starttime = events["time"].min()
     # events["time"] = (events["time"] - starttime).dt.total_seconds()
     # picks["phase_time"] = (picks["phase_time"] - starttime).dt.total_seconds()
     events[["x_km", "y_km"]] = events.apply(
         lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
     )
-    events["z_km"] = events["depth(m)"].apply(lambda x: x / 1e3)
+    events["z_km"] = events["depth_km"]
 
     # %%
     num_event = len(events)
@@ -177,14 +175,14 @@ def main(args):
 
     stations.reset_index(inplace=True, drop=True)
     stations["index"] = stations.index.values
-    stations.set_index("station", inplace=True)
+    stations.set_index("station_id", inplace=True)
     station_loc = stations[["x_km", "y_km", "z_km"]].values
     station_dt = None
 
     events.reset_index(inplace=True, drop=True)
     events["index"] = events.index.values
     event_loc = events[["x_km", "y_km", "z_km"]].values
-    event_time = events["time"].values  # [:, np.newaxis]
+    event_time = events["time"].values
 
     event_index_map = {x: i for i, x in enumerate(events["event_index"])}
     picks = picks[picks["event_index"] != -1]
@@ -192,59 +190,28 @@ def main(args):
     picks["phase_time"] = picks.apply(lambda x: (x["phase_time"] - event_time[x["index"]]).total_seconds(), axis=1)
 
     # %%
-    plt.figure()
-    plt.scatter(stations["x_km"], stations["y_km"], s=10, marker="^")
-    plt.scatter(events["x_km"], events["y_km"], s=1)
-    plt.axis("scaled")
-    plt.savefig(figure_path / "station_event_v2.png", dpi=300, bbox_inches="tight")
-
-    # %%
     utils.init_distributed_mode(args)
     print(args)
 
     phase_dataset = PhaseDataset(picks, events, stations, double_difference=False, config=args)
-    phase_dataset_dd = PhaseDataset(picks, events, stations, double_difference=True, config=args)
-
     if args.distributed:
         sampler = torch.utils.data.distributed.DistributedSampler(phase_dataset, shuffle=False)
-        sampler_dd = torch.utils.data.distributed.DistributedSampler(phase_dataset_dd, shuffle=False)
     else:
         sampler = torch.utils.data.SequentialSampler(phase_dataset)
-        sampler_dd = torch.utils.data.SequentialSampler(phase_dataset_dd)
-
     data_loader = DataLoader(phase_dataset, batch_size=None, sampler=sampler, num_workers=args.workers, collate_fn=None)
-    data_loader_dd = DataLoader(
-        phase_dataset_dd, batch_size=None, sampler=sampler_dd, num_workers=args.workers, collate_fn=None
-    )
 
-    # %%
-    event_index = []
-    station_index = []
-    phase_score = []
-    phase_time = []
-    phase_type = []
+    if args.double_difference:
+        phase_dataset_dd = PhaseDataset(picks, events, stations, double_difference=True, config=args)
+        if args.distributed:
+            sampler_dd = torch.utils.data.distributed.DistributedSampler(phase_dataset_dd, shuffle=False)
+        else:
+            sampler_dd = torch.utils.data.SequentialSampler(phase_dataset_dd)
 
-    for i in range(len(events)):
-        phase_time.append(picks[picks["event_index"] == events.loc[i, "event_index"]]["phase_time"].values)
-        phase_score.append(picks[picks["event_index"] == events.loc[i, "event_index"]]["phase_score"].values)
-        phase_type.extend(picks[picks["event_index"] == events.loc[i, "event_index"]]["phase_type"].values.tolist())
-        event_index.extend([i] * len(picks[picks["event_index"] == events.loc[i, "event_index"]]))
-        station_index.append(
-            stations.loc[picks[picks["event_index"] == events.loc[i, "event_index"]]["station_id"], "index"].values
+        data_loader_dd = DataLoader(
+            phase_dataset_dd, batch_size=None, sampler=sampler_dd, num_workers=args.workers, collate_fn=None
         )
 
-    phase_time = np.concatenate(phase_time)
-    phase_score = np.concatenate(phase_score)
-    phase_type = np.array([{"P": 0, "S": 1}[x.upper()] for x in phase_type])
-    event_index = np.array(event_index)
-    station_index = np.concatenate(station_index)
-
     # %%
-    station_index = torch.tensor(station_index, dtype=torch.long)
-    event_index = torch.tensor(event_index, dtype=torch.long)
-    phase_weight = torch.tensor(phase_score, dtype=torch.float32)
-    phase_time = torch.tensor(phase_time, dtype=torch.float32)
-    phase_type = torch.tensor(phase_type, dtype=torch.long)
 
     travel_time = TravelTime(
         num_event,
@@ -258,78 +225,168 @@ def main(args):
     init_event_loc = travel_time.event_loc.weight.clone().detach().numpy()
     init_event_time = travel_time.event_time.weight.clone().detach().numpy()
 
-    # optimizer = optim.LBFGS(params=travel_time.parameters(), max_iter=1000, line_search_fn="strong_wolfe")
-    optimizer = optim.Adam(params=travel_time.parameters(), lr=0.1)
-    # optimizer = optim.SGD(params=travel_time.parameters(), lr=10.0)
-    epoch = 2000
-    for i in range(epoch):
-        optimizer.zero_grad()
+    if (args.opt.lower() == "lbfgs") or (args.opt.lower() == "bfgs"):
+        optimizer = optim.LBFGS(params=travel_time.parameters(), max_iter=1000, line_search_fn="strong_wolfe")
+    elif args.opt.lower() == "adam":
+        optimizer = optim.Adam(params=travel_time.parameters(), lr=0.1)
+    elif args.opt.lower() == "sgd":
+        optimizer = optim.SGD(params=travel_time.parameters(), lr=10.0)
+    else:
+        raise ValueError(f"Unknown optimizer: {args.opt}")
 
-        loss = 0
-        loss_dd = 0
-        for meta in data_loader:
-            station_index = meta["station_index"]
-            event_index = meta["event_index"]
-            phase_time = meta["phase_time"]
-            phase_type = meta["phase_type"]
-            phase_weight = meta["phase_weight"]
+    if (args.opt.lower() == "lbfgs") or (args.opt.lower() == "bfgs"):
+        prev_loss = 0
+        for i in range(args.epochs):
 
-            # def closure():
-            #     loss = travel_time(station_index, event_index, phase_type, phase_time, phase_weight)["loss"]
-            #     loss.backward()
-            #     return loss
+            def closure():
+                optimizer.zero_grad()
+                for meta in data_loader:
+                    station_index = meta["station_index"]
+                    event_index = meta["event_index"]
+                    phase_time = meta["phase_time"]
+                    phase_type = meta["phase_type"]
+                    phase_weight = meta["phase_weight"]
+                    loss = travel_time(
+                        station_index,
+                        event_index,
+                        phase_type,
+                        phase_time,
+                        phase_weight,
+                        double_difference=False,
+                    )["loss"]
+                    if args.distributed:
+                        dist.barrier()
+                        dist.all_reduce(loss)
+                    loss.backward()
 
-            # optimizer.step(closure)
+                    if args.double_difference:
+                        for meta in data_loader_dd:
+                            station_index = meta["station_index"]
+                            event_index = meta["event_index"]
+                            phase_time = meta["phase_time"]
+                            phase_type = meta["phase_type"]
+                            phase_weight = meta["phase_weight"]
 
-            loss = travel_time(
-                station_index,
-                event_index,
-                phase_type,
-                phase_time,
-                phase_weight,
-                double_difference=False,
-            )["loss"]
-            loss.backward()
+                            loss_dd = travel_time(
+                                station_index,
+                                event_index,
+                                phase_type,
+                                phase_time,
+                                phase_weight,
+                                double_difference=True,
+                            )["loss"]
+                            if args.distributed:
+                                dist.barrier()
+                                dist.all_reduce(loss_dd)
 
-        if args.double_difference:
-            for meta in data_loader_dd:
+                            (loss_dd * args.dd_weight).backward()
+
+                return loss
+
+            optimizer.step(closure)
+
+            loss = 0
+            loss_dd = 0
+            for meta in data_loader:
+                station_index = meta["station_index"]
+                event_index = meta["event_index"]
+                phase_time = meta["phase_time"]
+                phase_type = meta["phase_type"]
+                phase_weight = meta["phase_weight"]
+                loss += travel_time(
+                    station_index,
+                    event_index,
+                    phase_type,
+                    phase_time,
+                    phase_weight,
+                    double_difference=False,
+                )["loss"]
+            if args.double_difference:
+                for meta in data_loader_dd:
+                    station_index = meta["station_index"]
+                    event_index = meta["event_index"]
+                    phase_time = meta["phase_time"]
+                    phase_type = meta["phase_type"]
+                    phase_weight = meta["phase_weight"]
+
+                    loss_dd = travel_time(
+                        station_index,
+                        event_index,
+                        phase_type,
+                        phase_time,
+                        phase_weight,
+                        double_difference=True,
+                    )["loss"]
+            if abs((loss + loss_dd) - prev_loss) < 1e-6:
+                break
+            prev_loss = loss + loss_dd
+            print(f"Loss: {loss+loss_dd}:  {loss} + {loss_dd}")
+
+            # set variable range
+            travel_time.event_loc.weight.data[:, 2] += (
+                torch.randn_like(travel_time.event_loc.weight.data[:, 2]) * (args.epochs - i) / args.epochs
+            )
+            travel_time.event_loc.weight.data[:, 2].clamp_(min=config["z(km)"][0], max=config["z(km)"][1])
+
+    else:
+        for i in range(args.epochs):
+            optimizer.zero_grad()
+
+            prev_loss = 0
+            loss = 0
+            loss_dd = 0
+            for meta in data_loader:
                 station_index = meta["station_index"]
                 event_index = meta["event_index"]
                 phase_time = meta["phase_time"]
                 phase_type = meta["phase_type"]
                 phase_weight = meta["phase_weight"]
 
-                # def closure():
-                #     loss = travel_time(station_index, event_index, phase_type, phase_time, phase_weight)["loss"]
-                #     loss.backward()
-                #     return loss
-
-                # optimizer.step(closure)
-
-                loss_dd = travel_time(
+                loss = travel_time(
                     station_index,
                     event_index,
                     phase_type,
                     phase_time,
                     phase_weight,
-                    double_difference=True,
+                    double_difference=False,
                 )["loss"]
-                (loss_dd * args.dd_weight).backward()
+                loss.backward()
 
-        if i % 100 == 0:
-            print(f"Loss: {loss+loss_dd}:  {loss} + {loss_dd}")
+            if args.double_difference:
+                for meta in data_loader_dd:
+                    station_index = meta["station_index"]
+                    event_index = meta["event_index"]
+                    phase_time = meta["phase_time"]
+                    phase_type = meta["phase_type"]
+                    phase_weight = meta["phase_weight"]
 
-        # optimizer.step(closure)
-        optimizer.step()
+                    loss_dd = travel_time(
+                        station_index,
+                        event_index,
+                        phase_type,
+                        phase_time,
+                        phase_weight,
+                        double_difference=True,
+                    )["loss"]
+                    (loss_dd * args.dd_weight).backward()
 
-        # set variable range
-        travel_time.event_loc.weight.data[:, 2].clamp_(min=config["z(km)"][0], max=config["z(km)"][1])
+            optimizer.step()
+
+            if abs((loss + loss_dd) - prev_loss) < 1e-3:
+                print(f"Loss: {loss+loss_dd}:  {loss} + {loss_dd}")
+                break
+            prev_loss = loss + loss_dd
+
+            if i % 100 == 0:
+                print(f"Loss: {loss+loss_dd}:  {loss} + {loss_dd}")
+
+            # set variable range
+            travel_time.event_loc.weight.data[:, 2] += (
+                torch.randn_like(travel_time.event_loc.weight.data[:, 2]) * (args.epochs - i) / args.epochs
+            )
+            travel_time.event_loc.weight.data[:, 2].clamp_(min=config["z(km)"][0], max=config["z(km)"][1])
 
     # %%
-    tt = travel_time(
-        station_index, event_index, phase_type, phase_weight=phase_weight, double_difference=args.double_difference
-    )["phase_time"]
-    print("Loss using invert location", F.mse_loss(tt, phase_time))
     station_dt = travel_time.station_dt.weight.clone().detach().numpy()
     print(f"station_dt: max = {np.max(station_dt)}, min = {np.min(station_dt)}, mean = {np.mean(station_dt)}")
     invert_event_loc = travel_time.event_loc.weight.clone().detach().numpy()

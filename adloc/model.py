@@ -309,7 +309,8 @@ class TravelTime(nn.Module):
         station_dt=None,
         event_loc=None,
         event_time=None,
-        reg=0.1,
+        invert_station_dt=False,
+        reg_station_dt=0.1,
         velocity={"P": 6.0, "S": 6.0 / 1.73},
         eikonal=None,
         zlim=[0, 30],
@@ -323,14 +324,16 @@ class TravelTime(nn.Module):
         self.station_dt = nn.Embedding(num_station, 2)  # vp, vs
         self.station_loc.weight = torch.nn.Parameter(torch.tensor(station_loc, dtype=dtype), requires_grad=False)
         if station_dt is not None:
-            self.station_dt.weight = torch.nn.Parameter(torch.tensor(station_dt, dtype=dtype))  # , requires_grad=False)
+            self.station_dt.weight = torch.nn.Parameter(
+                torch.tensor(station_dt, dtype=dtype), requires_grad=invert_station_dt
+            )
         else:
             self.station_dt.weight = torch.nn.Parameter(
-                torch.zeros(num_station, 2, dtype=dtype)
-            )  # , requires_grad=False)
+                torch.zeros(num_station, 2, dtype=dtype), requires_grad=invert_station_dt
+            )
         self.velocity = [velocity["P"], velocity["S"]]
 
-        self.reg = reg
+        self.reg_station_dt = reg_station_dt
         if event_loc is not None:
             self.event_loc.weight = torch.nn.Parameter(torch.tensor(event_loc, dtype=dtype).contiguous())
         else:
@@ -432,7 +435,7 @@ class TravelTime(nn.Module):
                     loss += torch.mean(F.huber_loss(t_, phase_time_, reduction="none") * phase_weight_)
                 else:
                     loss += torch.mean(F.huber_loss(t_, phase_time_, reduction="none") * phase_weight_)
-                    loss += self.reg * torch.abs(
+                    loss += self.reg_station_dt * torch.abs(
                         torch.mean(station_dt_)
                     )  ## prevent the trade-off between station_dt and event_time
 

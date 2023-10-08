@@ -80,18 +80,25 @@ class PhaseDataset(Dataset):
                 event_index.extend([[key1, key2]] * len(common))
                 station_index.append(self.stations.loc[common["station_id"], "index"].values)
 
-        phase_time = np.concatenate(phase_time)
-        phase_score = np.concatenate(phase_score)
-        phase_type = np.array([{"P": 0, "S": 1}[x.upper()] for x in phase_type])
-        event_index = np.array(event_index)
-        station_index = np.concatenate(station_index)
+        if len(phase_time) > 0:
+            phase_time = np.concatenate(phase_time)
+            phase_score = np.concatenate(phase_score)
+            phase_type = np.array([{"P": 0, "S": 1}[x.upper()] for x in phase_type])
+            event_index = np.array(event_index)
+            station_index = np.concatenate(station_index)
 
-        # %%
-        self.station_index = torch.tensor(station_index, dtype=torch.long)
-        self.event_index = torch.tensor(event_index, dtype=torch.long)
-        self.phase_weight = torch.tensor(phase_score, dtype=torch.float32)
-        self.phase_time = torch.tensor(phase_time, dtype=torch.float32)
-        self.phase_type = torch.tensor(phase_type, dtype=torch.long)
+            # %%
+            self.station_index = torch.tensor(station_index, dtype=torch.long)
+            self.event_index = torch.tensor(event_index, dtype=torch.long)
+            self.phase_weight = torch.tensor(phase_score, dtype=torch.float32)
+            self.phase_time = torch.tensor(phase_time, dtype=torch.float32)
+            self.phase_type = torch.tensor(phase_type, dtype=torch.long)
+        else:
+            self.station_index = torch.tensor([], dtype=torch.long)
+            self.event_index = torch.tensor([], dtype=torch.long)
+            self.phase_weight = torch.tensor([], dtype=torch.float32)
+            self.phase_time = torch.tensor([], dtype=torch.float32)
+            self.phase_type = torch.tensor([], dtype=torch.long)
 
     def __getitem__(self, i):
         # phase_time = self.picks[self.picks["event_index"] == self.events.loc[i, "event_index"]]["phase_time"].values
