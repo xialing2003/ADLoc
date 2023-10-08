@@ -245,7 +245,7 @@ def grad(x, dim=0, h=1.0):
 
 class CalcTravelTime(Function):
     @staticmethod
-    def forward(r, z, timetable, rgrid0, zgrid0, nr, nz, h):
+    def forward(r, z, timetable, timetable_grad_r, timetable_grad_z, rgrid0, zgrid0, nr, nz, h):
         # tt = _interp(timetable.numpy(), r.numpy(), z.numpy(), rgrid0, zgrid0, nr, nz, h)
         tt = _interp(timetable, r.numpy(), z.numpy(), rgrid0, zgrid0, nr, nz, h)
         tt = torch.from_numpy(tt)
@@ -254,9 +254,11 @@ class CalcTravelTime(Function):
 
     @staticmethod
     def setup_context(ctx, inputs, output):
-        r, z, timetable, rgrid0, zgrid0, nr, nz, h = inputs
+        r, z, timetable, timetable_grad_r, timetable_grad_z, rgrid0, zgrid0, nr, nz, h = inputs
         ctx.save_for_backward(r, z)
         ctx.timetable = timetable
+        ctx.timetable_grad_r = timetable_grad_r
+        ctx.timetable_grad_z = timetable_grad_z
         ctx.rgrid0 = rgrid0
         ctx.zgrid0 = zgrid0
         ctx.nr = nr
@@ -265,7 +267,8 @@ class CalcTravelTime(Function):
 
     @staticmethod
     def backward(ctx, grad_output):
-        timetable = ctx.timetable
+        timetable_grad_r = ctx.timetable_grad_r
+        timetable_grad_z = ctx.timetable_grad_z
         rgrid0 = ctx.rgrid0
         zgrid0 = ctx.zgrid0
         nr = ctx.nr
@@ -273,15 +276,16 @@ class CalcTravelTime(Function):
         h = ctx.h
         r, z = ctx.saved_tensors
 
-        grad_r = grad_z = grad_timetable = grad_rgrid0 = grad_zgrid0 = grad_nr = grad_nz = grad_h = None
+        # grad_r = grad_z = grad_rgrid0 = grad_zgrid0 = grad_nr = grad_nz = grad_h = None
 
         # timetable = timetable.numpy().reshape(nr, nz)
-        timetable = timetable.reshape(nr, nz)
-        grad_time_r, grad_time_z = np.gradient(timetable, h, edge_order=2)
-        grad_time_r = grad_time_r.flatten()
-        grad_time_z = grad_time_z.flatten()
-        grad_r = _interp(grad_time_r, r.numpy(), z.numpy(), rgrid0, zgrid0, nr, nz, h)
-        grad_z = _interp(grad_time_z, r.numpy(), z.numpy(), rgrid0, zgrid0, nr, nz, h)
+        # timetable = timetable.reshape(nr, nz)
+        # grad_time_r, grad_time_z = np.gradient(timetable, h, edge_order=2)
+        # grad_time_r = grad_time_r.flatten()
+        # grad_time_z = grad_time_z.flatten()
+
+        grad_r = _interp(timetable_grad_r, r.numpy(), z.numpy(), rgrid0, zgrid0, nr, nz, h)
+        grad_z = _interp(timetable_grad_z, r.numpy(), z.numpy(), rgrid0, zgrid0, nr, nz, h)
 
         grad_r = torch.from_numpy(grad_r) * grad_output
         grad_z = torch.from_numpy(grad_z) * grad_output
@@ -292,7 +296,7 @@ class CalcTravelTime(Function):
         # grad_r = _interp(grad_r, r, z, rgrid0, zgrid0, nr, nz, h)
         # grad_z = _interp(grad_z, r, z, rgrid0, zgrid0, nr, nz, h)
 
-        return grad_r, grad_z, grad_timetable, grad_rgrid0, grad_zgrid0, grad_nr, grad_nz, grad_h
+        return grad_r, grad_z, None, None, None, None, None, None, None, None
 
 
 # %%
@@ -308,6 +312,7 @@ class TravelTime(nn.Module):
         reg=0.1,
         velocity={"P": 6.0, "S": 6.0 / 1.73},
         eikonal=None,
+        zlim=[0, 30],
         dtype=torch.float32,
     ):
         super().__init__()
@@ -328,14 +333,24 @@ class TravelTime(nn.Module):
         self.reg = reg
         if event_loc is not None:
             self.event_loc.weight = torch.nn.Parameter(torch.tensor(event_loc, dtype=dtype).contiguous())
+        else:
+            self.event_loc.weight = torch.nn.Parameter(torch.zeros(num_event, 3, dtype=dtype).contiguous())
         if event_time is not None:
             self.event_time.weight = torch.nn.Parameter(torch.tensor(event_time, dtype=dtype).contiguous())
+        else:
+            self.event_time.weight = torch.nn.Parameter(torch.zeros(num_event, 1, dtype=dtype).contiguous())
 
         self.eikonal = eikonal
+        self.zlim = zlim
 
     def calc_time(self, event_loc, station_loc, phase_type, double_difference=False):
         if self.eikonal is None:
             dist = torch.linalg.norm(event_loc - station_loc, axis=-1, keepdim=True)
+            # r = torch.linalg.norm(event_loc[..., :2] - station_loc[..., :2], axis=-1, keepdims=True)
+            # z = event_loc[..., 2:3] - station_loc[..., 2:3]
+            # # z = torch.clamp(z, min=0, max=30)
+            # z = torch.clamp(z, min=self.zlim[0], max=self.zlim[1])
+            # dist = torch.sqrt(r**2 + z**2)
             tt = dist / self.velocity[phase_type]
             tt = tt.float()
         else:
@@ -350,14 +365,18 @@ class TravelTime(nn.Module):
 
             r = torch.linalg.norm(event_loc[:, :2] - station_loc[:, :2], axis=-1, keepdims=False)  ## nb, 2 (pair), 3
             z = event_loc[:, 2] - station_loc[:, 2]
+            # z = torch.clamp(z, min=0, max=30)
 
             timetable = self.eikonal["up"] if phase_type == 0 else self.eikonal["us"]
+            timetable_grad = self.eikonal["grad_up"] if phase_type == 0 else self.eikonal["grad_us"]
+            timetable_grad_r = timetable_grad[0]
+            timetable_grad_z = timetable_grad[1]
             rgrid0 = self.eikonal["rgrid"][0]
             zgrid0 = self.eikonal["zgrid"][0]
             nr = self.eikonal["nr"]
             nz = self.eikonal["nz"]
             h = self.eikonal["h"]
-            tt = CalcTravelTime.apply(r, z, timetable, rgrid0, zgrid0, nr, nz, h)
+            tt = CalcTravelTime.apply(r, z, timetable, timetable_grad_r, timetable_grad_z, rgrid0, zgrid0, nr, nz, h)
 
             tt = tt.float()
             if double_difference:
@@ -413,8 +432,8 @@ class TravelTime(nn.Module):
                     loss += torch.mean(F.huber_loss(t_, phase_time_, reduction="none") * phase_weight_)
                 else:
                     loss += torch.mean(F.huber_loss(t_, phase_time_, reduction="none") * phase_weight_)
-                    loss += self.reg * torch.mean(
-                        torch.abs(station_dt_)
+                    loss += self.reg * torch.abs(
+                        torch.mean(station_dt_)
                     )  ## prevent the trade-off between station_dt and event_time
 
         return {"phase_time": pred_time, "loss": loss}

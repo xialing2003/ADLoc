@@ -1,4 +1,3 @@
-# %%
 from datetime import datetime
 from pathlib import Path
 
@@ -261,7 +260,8 @@ def main(args):
 
     # optimizer = optim.LBFGS(params=travel_time.parameters(), max_iter=1000, line_search_fn="strong_wolfe")
     optimizer = optim.Adam(params=travel_time.parameters(), lr=0.1)
-    epoch = 1000
+    # optimizer = optim.SGD(params=travel_time.parameters(), lr=10.0)
+    epoch = 2000
     for i in range(epoch):
         optimizer.zero_grad()
 
@@ -322,6 +322,9 @@ def main(args):
         # optimizer.step(closure)
         optimizer.step()
 
+        # set variable range
+        travel_time.event_loc.weight.data[:, 2].clamp_(min=config["z(km)"][0], max=config["z(km)"][1])
+
     # %%
     tt = travel_time(
         station_index, event_index, phase_type, phase_weight=phase_weight, double_difference=args.double_difference
@@ -348,7 +351,33 @@ def main(args):
     # plt.xlim(xlim)
     # plt.ylim(ylim)
     plt.legend()
-    plt.savefig(figure_path / "invert_location.png", dpi=300, bbox_inches="tight")
+    plt.savefig(figure_path / "invert_location_xy.png", dpi=300, bbox_inches="tight")
+
+    plt.figure()
+    plt.plot(event_loc[:, 0], event_loc[:, 2], "x", markersize=1, color="blue", label="True locations")
+    xlim = plt.xlim()
+    ylim = plt.ylim()
+    plt.plot(init_event_loc[:, 0], init_event_loc[:, 2], "x", markersize=1, color="green", label="Initial locations")
+    plt.plot(invert_event_loc[:, 0], invert_event_loc[:, 2], "x", markersize=1, color="red", label="Inverted locations")
+    # plt.xlim(xlim)
+    # plt.ylim(ylim)
+    plt.gca().invert_yaxis()
+    plt.grid()
+    plt.legend()
+    plt.savefig(figure_path / "invert_location_xz.png", dpi=300, bbox_inches="tight")
+
+    plt.figure()
+    plt.plot(event_loc[:, 1], event_loc[:, 2], "x", markersize=1, color="blue", label="True locations")
+    xlim = plt.xlim()
+    ylim = plt.ylim()
+    plt.plot(init_event_loc[:, 1], init_event_loc[:, 2], "x", markersize=1, color="green", label="Initial locations")
+    plt.plot(invert_event_loc[:, 1], invert_event_loc[:, 2], "x", markersize=1, color="red", label="Inverted locations")
+    # plt.xlim(xlim)
+    # plt.ylim(ylim)
+    plt.gca().invert_yaxis()
+    plt.grid()
+    plt.legend()
+    plt.savefig(figure_path / "invert_location_yz.png", dpi=300, bbox_inches="tight")
     # plt.show()
 
 
