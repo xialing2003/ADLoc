@@ -215,6 +215,7 @@ def main(args):
     # init_event_loc = travel_time.event_loc.weight.clone().detach().numpy()
     # init_event_time = travel_time.event_time.weight.clone().detach().numpy()
 
+    print(f"Dataset: {len(picks)} picks, {len(events)} events, {len(stations)} stations, {len(phase_dataset)} batches")
     optimize(args, config, data_loader, data_loader_dd, travel_time)
 
     # %%

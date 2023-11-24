@@ -432,12 +432,13 @@ class TravelTime(nn.Module):
                 phase_time_ = phase_time[phase_type == type]
 
                 if double_difference:
-                    loss += torch.mean(F.huber_loss(t_, phase_time_, reduction="none") * phase_weight_)
+                    loss += torch.sum(F.huber_loss(t_, phase_time_, reduction="none") * phase_weight_)
                 else:
-                    loss += torch.mean(F.huber_loss(t_, phase_time_, reduction="none") * phase_weight_)
-                    loss += self.reg_station_dt * torch.abs(
-                        torch.mean(station_dt_)
-                    )  ## prevent the trade-off between station_dt and event_time
+                    loss += torch.sum(F.huber_loss(t_, phase_time_, reduction="none") * phase_weight_)
+                    loss += self.reg_station_dt * torch.mean(torch.abs(station_dt_)) * len(t_)
+                    # loss += self.reg_station_dt * torch.abs(
+                    #     torch.sum(station_dt_)
+                    # )  ## prevent the trade-off between station_dt and event_time
 
         return {"phase_time": pred_time, "loss": loss}
 
