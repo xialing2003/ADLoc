@@ -4,6 +4,8 @@ test_data
 *.pyc
 .DS_Store
 *.csv
+*.png
+*.json
 dist/
 ADLoc.egg-info
 eikonal/

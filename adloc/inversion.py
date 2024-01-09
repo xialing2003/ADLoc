@@ -13,6 +13,27 @@ def optimize(args, config, data_loader, data_loader_dd, travel_time):
     else:
         raise ValueError(f"Unknown optimizer: {args.opt}")
 
+    # init loss
+    loss = 0
+    for meta in data_loader:
+        station_index = meta["station_index"]
+        event_index = meta["event_index"]
+        phase_time = meta["phase_time"]
+        phase_type = meta["phase_type"]
+        phase_weight = meta["phase_weight"]
+        loss += travel_time(
+            station_index,
+            event_index,
+            phase_type,
+            phase_time,
+            phase_weight,
+            double_difference=False,
+        )["loss"]
+        if args.distributed:
+            dist.barrier()
+            dist.all_reduce(loss)
+    print(f"Init loss: {loss}")
+
     if (args.opt.lower() == "lbfgs") or (args.opt.lower() == "bfgs"):
         prev_loss = 0
         for i in range(args.epochs):
@@ -105,7 +126,8 @@ def optimize(args, config, data_loader, data_loader_dd, travel_time):
             travel_time.event_loc.weight.data[:, 2] += (
                 torch.randn_like(travel_time.event_loc.weight.data[:, 2]) * (args.epochs - i) / args.epochs
             )
-            travel_time.event_loc.weight.data[:, 2].clamp_(min=config["z(km)"][0], max=config["z(km)"][1])
+            # travel_time.event_loc.weight.data[:, 2].clamp_(min=config["z(km)"][0], max=config["z(km)"][1])
+            travel_time.event_loc.weight.data[:, 2].clamp_(min=config["mindepth"], max=config["maxdepth"])
 
     else:
         for i in range(args.epochs):

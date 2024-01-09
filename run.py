@@ -88,69 +88,64 @@ def get_args_parser(add_help=True):
 
 
 def main(args):
-    ##TODO: clean up config
-    # config = {
-    #     "center": (-117.504, 35.705),
-    #     "xlim_degree": [-118.004, -117.004],
-    #     "ylim_degree": [35.205, 36.205],
-    #     "degree2km": 111.19492474777779,
-    #     "starttime": datetime(2019, 7, 4, 17, 0),
-    #     "endtime": datetime(2019, 7, 5, 0, 0),
-    # }
-
     with open(args.config, "r") as fp:
         config = json.load(fp)
-    if "center" not in config:
-        config["center"] = (
-            (config["minlongitude"] + config["maxlongitude"]) / 2,
-            (config["minlatitude"] + config["maxlatitude"]) / 2,
-        )
 
-    ## Eikonal for 1D velocity model
-    zz = [0.0, 5.5, 16.0, 32.0]
-    vp = [5.5, 5.5, 6.7, 7.8]
-    vp_vs_ratio = 1.73
-    vs = [v / vp_vs_ratio for v in vp]
-    h = 1.0
-    vel = {"z": zz, "p": vp, "s": vs}
-    config["x(km)"] = (
-        max(config["maxlongitude"] - config["center"][0], config["center"][0] - config["minlongitude"])
-        * config["degree2km"]
-        * np.cos(np.deg2rad(config["center"][1]))
-    )
-    config["y(km)"] = (
-        max(config["maxlatitude"] - config["center"][1], config["center"][1] - config["minlatitude"])
-        * config["degree2km"]
-    )
-    config["z(km)"] = (0, 20)
-    config["eikonal"] = {"vel": vel, "h": h, "xlim": config["x(km)"], "ylim": config["y(km)"], "zlim": config["z(km)"]}
+    if "latitude0" not in config:
+        config["latitude0"] = (config["minlatitude"] + config["maxlatitude"]) / 2
+    if "longitude0" not in config:
+        config["longitude0"] = (config["minlongitude"] + config["maxlongitude"]) / 2
+    if "mindepth" not in config:
+        config["mindepth"] = 0.0
+    if "maxdepth" not in config:
+        config["maxdepth"] = 20.0
+    if "degree2km" not in config:
+        config["degree2km"] = 111.19
+
+    proj = Proj(f"+proj=sterea +lon_0={config['longitude0']} +lat_0={config['latitude0']} +units=km")
+
+    vp = 6.0
+    vs = vp / 1.73
+    eikonal = None
 
     if args.eikonal:
+        ## Eikonal for 1D velocity model
+        zz = [0.0, 5.5, 16.0, 32.0]
+        vp = [5.5, 5.5, 6.7, 7.8]
+        vp_vs_ratio = 1.73
+        vs = [v / vp_vs_ratio for v in vp]
+        h = 1.0
+        vel = {"z": zz, "p": vp, "s": vs}
+        config["x(km)"] = proj(
+            longitude=[config["minlongitude"], config["maxlongitude"]], latitude=[config["latitude0"]] * 2
+        )
+        config["y(km)"] = proj(
+            longitude=[config["longitude0"]] * 2, latitude=[config["minlatitude"], config["maxlatitude"]]
+        )
+        config["z(km)"] = [config["mindepth"], config["maxdepth"]]
+        config["eikonal"] = {
+            "vel": vel,
+            "h": h,
+            "xlim": config["x(km)"],
+            "ylim": config["y(km)"],
+            "zlim": config["z(km)"],
+        }
         eikonal = initialize_eikonal(config["eikonal"])
-    else:
-        eikonal = None
 
-    # %% TODO: Convert to args
-    # stations = pd.read_csv(data_path / "stations.csv")
-    # picks = pd.read_csv(data_path / "picks.csv", parse_dates=["phase_time"])
-    # events = pd.read_csv(data_path / "events.csv", parse_dates=["time"])
-    # stations = pd.read_csv(args.stations)
+    # %%
     with open(args.stations, "r") as fp:
         stations = json.load(fp)
     stations = pd.DataFrame.from_dict(stations, orient="index")
     stations["station_id"] = stations.index
+    # stations = pd.read_csv(args.stations)
     picks = pd.read_csv(args.picks, parse_dates=["phase_time"])
     events = pd.read_csv(args.events, parse_dates=["time"])
 
     # %%
-    proj = Proj(f"+proj=sterea +lon_0={config['center'][0]} +lat_0={config['center'][1]} +units=km")
     stations[["x_km", "y_km"]] = stations.apply(
         lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
     )
     stations["z_km"] = stations["depth_km"]
-    # starttime = events["time"].min()
-    # events["time"] = (events["time"] - starttime).dt.total_seconds()
-    # picks["phase_time"] = (picks["phase_time"] - starttime).dt.total_seconds()
     events[["x_km", "y_km"]] = events.apply(
         lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
     )
@@ -159,24 +154,25 @@ def main(args):
     # %%
     num_event = len(events)
     num_station = len(stations)
-    vp = 6.0
-    vs = vp / 1.73
 
     stations.reset_index(inplace=True, drop=True)
-    stations["index"] = stations.index.values
+    stations["index"] = stations.index.values  # reindex starts from 0 continuously
     stations.set_index("station_id", inplace=True)
     station_loc = stations[["x_km", "y_km", "z_km"]].values
     station_dt = None
 
     events.reset_index(inplace=True, drop=True)
-    events["index"] = events.index.values
+    events["index"] = events.index.values  # reindex starts from 0 continuously
     event_loc = events[["x_km", "y_km", "z_km"]].values
     event_time = events["time"].values
 
     event_index_map = {x: i for i, x in enumerate(events["event_index"])}
     picks = picks[picks["event_index"] != -1]
-    picks["index"] = picks["event_index"].apply(lambda x: event_index_map[x])
+    picks["index"] = picks["event_index"].apply(lambda x: event_index_map[x])  # map index starts from 0 continuously
     picks["phase_time"] = picks.apply(lambda x: (x["phase_time"] - event_time[x["index"]]).total_seconds(), axis=1)
+
+    if args.double_difference:
+        picks = picks.merge(events[["index", "x_km", "y_km", "z_km"]], left_on="index", right_on="index")
 
     # %%
     utils.init_distributed_mode(args)
@@ -207,7 +203,7 @@ def main(args):
         num_event,
         num_station,
         station_loc,
-        # event_loc=event_loc,
+        # event_loc=event_loc,  # Initial location
         # event_time=event_time,
         velocity={"P": vp, "S": vs},
         eikonal=eikonal,

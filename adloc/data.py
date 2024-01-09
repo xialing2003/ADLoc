@@ -122,22 +122,37 @@ from tqdm import tqdm
 
 
 class PhaseDataset(Dataset):
-    def __init__(self, picks, events, stations, batch_size=1000, double_difference=False, config=None):
+    def __init__(
+        self,
+        picks,
+        events,
+        stations,
+        batch_size=1000,
+        double_difference=False,
+        min_pair_dist=10,
+        max_pair_num=500,
+        config=None,
+    ):
         self.picks = picks
         self.events = events
         self.stations = stations
         self.config = config
         self.double_difference = double_difference
         self.batch_size = batch_size
+        self.min_pair_dist = min_pair_dist
+        self.max_pair_num = max_pair_num
 
         # preprocess
         self.picks_by_event = picks.groupby("index")
-        # self.batch_size = len(self.picks_by_event)
         self.event_index_batch = np.array_split(self.events.index.values, (len(self.events) - 1) // self.batch_size + 1)
-        self.read_data()
+        if double_difference:
+            self.neigh = NearestNeighbors(radius=self.min_pair_dist)
+            self.neigh.fit(self.events[["x_km", "y_km", "z_km"]].values)
+            self.read_data_dd()
+        else:
+            self.read_data()
 
     def __len__(self):
-        # return (len(self.events) - 1) // self.batch_size + 1
         return len(self.event_index_batch)
 
     def read_data(self):
@@ -178,6 +193,69 @@ class PhaseDataset(Dataset):
                 "phase_weight": phase_weight,
                 "phase_type": phase_type,
             }
+        self.meta = meta
+
+    def read_data_dd(self):
+        meta = {}
+        for i, index_batch in enumerate(self.event_index_batch):
+            event_index = []
+            station_index = []
+            phase_score = []
+            phase_time = []
+            phase_type = []
+
+            event_loc = self.events.loc[index_batch, ["x_km", "y_km", "z_km"]].values
+            neighs = self.neigh.radius_neighbors(event_loc, sort_results=True)[1]
+
+            for j, index1 in enumerate(index_batch):
+                picks1 = self.picks_by_event.get_group(index1)
+
+                for index2 in neighs[j][1 : self.max_pair_num + 1]:
+                    if index1 >= index2:
+                        continue
+                    picks2 = self.picks_by_event.get_group(index2)
+                    common = picks1.merge(picks2, on=["station_id", "phase_type"], how="inner")
+                    phase_time.append(common["phase_time_x"].values - common["phase_time_y"].values)
+                    phase_score.append((common["phase_score_x"].values + common["phase_score_y"].values) / 2.0)
+                    phase_type.extend(common["phase_type"].values.tolist())
+                    event_index.extend([[index1, index2]] * len(common))
+                    station_index.append(self.stations.loc[common["station_id"], "index"].values)
+
+            if len(phase_time) == 0:
+                self.station_index = torch.tensor([], dtype=torch.long)
+                self.event_index = torch.tensor([], dtype=torch.long)
+                self.phase_weight = torch.tensor([], dtype=torch.float32)
+                self.phase_time = torch.tensor([], dtype=torch.float32)
+                self.phase_type = torch.tensor([], dtype=torch.long)
+            elif len(phase_time) == 1:
+                phase_type = np.array([{"P": 0, "S": 1}[x.upper()] for x in phase_type])
+                event_index = np.array(event_index)
+                self.station_index = torch.tensor(station_index, dtype=torch.long)
+                self.event_index = torch.tensor(event_index, dtype=torch.long)
+                self.phase_weight = torch.tensor(phase_score, dtype=torch.float32)
+                self.phase_time = torch.tensor(phase_time, dtype=torch.float32)
+                self.phase_type = torch.tensor(phase_type, dtype=torch.long)
+            else:
+                station_index = np.concatenate(station_index)
+                phase_time = np.concatenate(phase_time)
+                phase_score = np.concatenate(phase_score)
+                phase_type = np.array([{"P": 0, "S": 1}[x.upper()] for x in phase_type])
+                event_index = np.array(event_index)
+
+                self.station_index = torch.tensor(station_index, dtype=torch.long)
+                self.phase_time = torch.tensor(phase_time, dtype=torch.float32)
+                self.phase_weight = torch.tensor(phase_score, dtype=torch.float32)
+                self.phase_type = torch.tensor(phase_type, dtype=torch.long)
+                self.event_index = torch.tensor(event_index, dtype=torch.long)
+
+            meta[i] = {
+                "event_index": self.event_index,
+                "station_index": self.station_index,
+                "phase_time": self.phase_time,
+                "phase_weight": self.phase_weight,
+                "phase_type": self.phase_type,
+            }
+
         self.meta = meta
 
     def __getitem__(self, i):

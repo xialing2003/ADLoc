@@ -400,7 +400,10 @@ class TravelTime(nn.Module):
     ):
         loss = 0.0
         pred_time = torch.zeros(len(phase_type), dtype=torch.float32)
+        # for type in set(phase_type):
         for type in [0, 1]:
+            if len(phase_type[phase_type == type]) == 0:
+                continue
             station_index_ = station_index[phase_type == type]  # (nb,)
             event_index_ = event_index[phase_type == type]  # (nb,)
             phase_weight_ = phase_weight[phase_type == type]  # (nb,)
