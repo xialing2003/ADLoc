@@ -15,6 +15,7 @@ def optimize(args, config, data_loader, data_loader_dd, travel_time):
 
     # init loss
     loss = 0
+    loss_dd = 0
     for meta in data_loader:
         station_index = meta["station_index"]
         event_index = meta["event_index"]
@@ -32,7 +33,28 @@ def optimize(args, config, data_loader, data_loader_dd, travel_time):
         if args.distributed:
             dist.barrier()
             dist.all_reduce(loss)
-    print(f"Init loss: {loss}")
+
+        if args.double_difference:
+            for meta in data_loader_dd:
+                station_index = meta["station_index"]
+                event_index = meta["event_index"]
+                phase_time = meta["phase_time"]
+                phase_type = meta["phase_type"]
+                phase_weight = meta["phase_weight"]
+
+                loss_dd += travel_time(
+                    station_index,
+                    event_index,
+                    phase_type,
+                    phase_time,
+                    phase_weight,
+                    double_difference=True,
+                )["loss"]
+                if args.distributed:
+                    dist.barrier()
+                    dist.all_reduce(loss_dd)
+
+    print(f"Init loss: {loss+loss_dd}:  {loss} + {loss_dd}")
 
     if (args.opt.lower() == "lbfgs") or (args.opt.lower() == "bfgs"):
         prev_loss = 0
