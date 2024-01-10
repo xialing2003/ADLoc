@@ -35,6 +35,7 @@ def get_args_parser(add_help=True):
     parser.add_argument("--picks", type=str, default="tests/picks.csv", help="picks csv")
     parser.add_argument("--events", type=str, default="tests/events.csv", help="events csv")
     parser.add_argument("--result_path", type=str, default="results", help="result path")
+    parser.add_argument("--bootstrap", default=0, type=int, help="bootstrap")
 
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
     parser.add_argument(
@@ -104,6 +105,15 @@ def main(args):
 
     proj = Proj(f"+proj=sterea +lon_0={config['longitude0']} +lat_0={config['latitude0']} +units=km")
 
+    # %%
+    config["xlim_km"] = proj(
+        longitude=[config["minlongitude"], config["maxlongitude"]], latitude=[config["latitude0"]] * 2
+    )
+    config["ylim_km"] = proj(
+        longitude=[config["longitude0"]] * 2, latitude=[config["minlatitude"], config["maxlatitude"]]
+    )
+    config["zlim_km"] = [config["mindepth"], config["maxdepth"]]
+
     vp = 6.0
     vs = vp / 1.73
     eikonal = None
@@ -116,19 +126,12 @@ def main(args):
         vs = [v / vp_vs_ratio for v in vp]
         h = 1.0
         vel = {"z": zz, "p": vp, "s": vs}
-        config["x(km)"] = proj(
-            longitude=[config["minlongitude"], config["maxlongitude"]], latitude=[config["latitude0"]] * 2
-        )
-        config["y(km)"] = proj(
-            longitude=[config["longitude0"]] * 2, latitude=[config["minlatitude"], config["maxlatitude"]]
-        )
-        config["z(km)"] = [config["mindepth"], config["maxdepth"]]
         config["eikonal"] = {
             "vel": vel,
             "h": h,
-            "xlim": config["x(km)"],
-            "ylim": config["y(km)"],
-            "zlim": config["z(km)"],
+            "xlim": config["xlim_km"],
+            "ylim": config["ylim_km"],
+            "zlim": config["zlim_km"],
         }
         eikonal = initialize_eikonal(config["eikonal"])
 
@@ -199,17 +202,18 @@ def main(args):
         data_loader_dd = None
 
     # %%
+    event_loc_init = np.zeros((num_event, 3))
+    event_loc_init[:, 2] = np.mean(config["zlim_km"])
     travel_time = TravelTime(
         num_event,
         num_station,
         station_loc,
+        event_loc=event_loc_init,  # Initial location
         # event_loc=event_loc,  # Initial location
         # event_time=event_time,
         velocity={"P": vp, "S": vs},
         eikonal=eikonal,
     )
-    # init_event_loc = travel_time.event_loc.weight.clone().detach().numpy()
-    # init_event_time = travel_time.event_time.weight.clone().detach().numpy()
 
     print(f"Dataset: {len(picks)} picks, {len(events)} events, {len(stations)} stations, {len(phase_dataset)} batches")
     optimize(args, config, data_loader, data_loader_dd, travel_time)
@@ -233,9 +237,67 @@ def main(args):
     events[["longitude", "latitude"]] = events.apply(
         lambda x: pd.Series(proj(x["x_km"], x["y_km"], inverse=True)), axis=1
     )
+    events["depth_km"] = events["z_km"]
     events.to_csv(
         f"{args.result_path}/adloc_events.csv", index=False, float_format="%.5f", date_format="%Y-%m-%dT%H:%M:%S.%f"
     )
+
+    events_boostrap = []
+    for i in tqdm(range(args.bootstrap), desc="Bootstrapping:"):
+        picks_by_event = picks.groupby("index")
+        # picks_by_event_sample = picks_by_event.apply(lambda x: x.sample(frac=1.0, replace=True))  # Bootstrap
+        picks_by_event_sample = picks_by_event.apply(lambda x: x.sample(n=len(x) - 1, replace=False))  # Jackknife
+        picks_sample = picks_by_event_sample.reset_index(drop=True)
+        phase_dataset = PhaseDataset(picks_sample, events, stations, double_difference=False, config=args)
+        if args.distributed:
+            sampler = torch.utils.data.distributed.DistributedSampler(phase_dataset, shuffle=False)
+        else:
+            sampler = torch.utils.data.SequentialSampler(phase_dataset)
+        data_loader = DataLoader(
+            phase_dataset, batch_size=None, sampler=sampler, num_workers=args.workers, collate_fn=None
+        )
+
+        travel_time = TravelTime(
+            num_event,
+            num_station,
+            station_loc,
+            event_loc=event_loc_init,  # Initial location
+            velocity={"P": vp, "S": vs},
+            eikonal=eikonal,
+        )
+        optimize(args, config, data_loader, data_loader_dd, travel_time)
+
+        invert_event_loc = travel_time.event_loc.weight.clone().detach().numpy()
+        invert_event_time = travel_time.event_time.weight.clone().detach().numpy()
+        invert_station_dt = travel_time.station_dt.weight.clone().detach().numpy()
+        events_invert = events[["index"]].copy()
+        events_invert["t_s"] = invert_event_time[:, 0]
+        events_invert["x_km"] = invert_event_loc[:, 0]
+        events_invert["y_km"] = invert_event_loc[:, 1]
+        events_invert["z_km"] = invert_event_loc[:, 2]
+        events_boostrap.append(events_invert)
+
+    if len(events_boostrap) > 0:
+        events_boostrap = pd.concat(events_boostrap)
+        events_by_index = events_boostrap.groupby("index")
+        events_boostrap = events_by_index.mean()
+        events_boostrap_std = events_by_index.std()
+        events_boostrap["time"] = events["time"] + pd.to_timedelta(np.squeeze(events_boostrap["t_s"]), unit="s")
+        events_boostrap[["longitude", "latitude"]] = events_boostrap.apply(
+            lambda x: pd.Series(proj(x["x_km"], x["y_km"], inverse=True)), axis=1
+        )
+        events_boostrap["depth_km"] = events_boostrap["z_km"]
+        events_boostrap["std_x_km"] = events_boostrap_std["x_km"]
+        events_boostrap["std_y_km"] = events_boostrap_std["y_km"]
+        events_boostrap["std_z_km"] = events_boostrap_std["z_km"]
+        events_boostrap["std_t_s"] = events_boostrap_std["t_s"]
+        events_boostrap.reset_index(inplace=True)
+        events_boostrap.to_csv(
+            f"{args.result_path}/adloc_events_bootstrap.csv",
+            index=False,
+            float_format="%.5f",
+            date_format="%Y-%m-%dT%H:%M:%S.%f",
+        )
 
 
 if __name__ == "__main__":
