@@ -270,7 +270,7 @@ def main(args):
         invert_event_loc = travel_time.event_loc.weight.clone().detach().numpy()
         invert_event_time = travel_time.event_time.weight.clone().detach().numpy()
         invert_station_dt = travel_time.station_dt.weight.clone().detach().numpy()
-        events_invert = events[["index"]].copy()
+        events_invert = events[["index", "event_index"]].copy()
         events_invert["t_s"] = invert_event_time[:, 0]
         events_invert["x_km"] = invert_event_loc[:, 0]
         events_invert["y_km"] = invert_event_loc[:, 1]
@@ -292,6 +292,8 @@ def main(args):
         events_boostrap["std_z_km"] = events_boostrap_std["z_km"]
         events_boostrap["std_t_s"] = events_boostrap_std["t_s"]
         events_boostrap.reset_index(inplace=True)
+        events_boostrap["event_index"] = events_boostrap["event_index"].astype(int)
+        events_boostrap["index"] = events_boostrap["index"].astype(int)
         events_boostrap.to_csv(
             f"{args.result_path}/adloc_events_bootstrap.csv",
             index=False,
