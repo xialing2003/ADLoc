@@ -21,9 +21,11 @@ class ADLoc(BaseEstimator):
         vel = config["vel"]
         self.config = config
         self.stations = stations
-        self.eikonal = eikonal
+
         self.vel = vel
         self.num_event = num_event
+
+        self.eikonal = eikonal
 
         if events is not None:
             assert events.shape == (num_event, 4)
@@ -34,39 +36,29 @@ class ADLoc(BaseEstimator):
             )
 
     @staticmethod
-    def loss_grad(event, X, y, vel={0: 6.0, 1: 6.0 / 1.75}, eikonal=None):
+    def loss_grad(event, X, y, vel={0: 6.0, 1: 6.0 / 1.75}, stations=None, eikonal=None):
         """
         X: data_frame with columns ["timestamp", "x_km", "y_km", "z_km", "type"]
         """
-        ## dataframe
-        # xyz = X[["x_km", "y_km", "z_km"]].values
-        # v = X["vel"].values
-        ## numpy
-        xyz = X[:, :3]
-        type = X[:, 3]
-        v = np.array([vel[t] for t in type])
-
-        event_t = event[3]
-        event_loc = event[:3]
+        station_index = X[:, 0]
+        phase_type = X[:, 1]
 
         if eikonal is None:
-            tt = np.linalg.norm(xyz - event_loc, axis=-1) / v + event_t
+            v = np.array([vel[t] for t in phase_type])
+            tt = np.linalg.norm(event[:3] - stations[station_index, :3], axis=-1) / v + event[3]
         else:
-            tt = traveltime(event_loc[np.newaxis, :], xyz, type, eikonal) + event_t
+            tt = traveltime(0, station_index, phase_type, event[np.newaxis, :3], stations, eikonal) + event[3]
         loss = 0.5 * np.sum((tt - y) ** 2)
 
         J = np.ones((len(X), 4))
-        # diff = tt - y
-        # J[:, 3] = diff
         if eikonal is None:
             J[:, :3] = (
-                (event_loc - xyz)
-                / np.linalg.norm(xyz - event_loc, axis=-1, keepdims=True)
+                (event[:3] - stations[station_index, :3])
+                / np.linalg.norm(event[:3] - stations[station_index, :3], axis=-1, keepdims=True)
                 / v[:, np.newaxis]
-                # * diff[:, np.newaxis]
             )
         else:
-            grad = grad_traveltime(event_loc[np.newaxis, :], xyz, type, eikonal)
+            grad = grad_traveltime(0, station_index, phase_type, event[np.newaxis, :3], stations, eikonal)
             J[:, :3] = grad
 
         J = np.sum((tt - y)[:, np.newaxis] * J, axis=0)
@@ -74,20 +66,12 @@ class ADLoc(BaseEstimator):
 
     def fit(self, X, y=None, event_index=0):
 
-        station_index = X[:, 0]
-        xyz = self.stations[station_index, :3]
-        type = X[:, 1]
-        X = np.column_stack((xyz, type))
-
         opt = scipy.optimize.minimize(
             self.loss_grad,
             x0=self.events[event_index],
             method="L-BFGS-B",
             jac=True,
-            args=(X, y, self.vel, self.eikonal),
-            # args=(phase_time, phase_type, station_loc, weight, vel, 1, eikonal),
-            # bounds=bounds,
-            # options={"maxiter": max_iter, "gtol": convergence, "iprint": -1},
+            args=(X, y, self.vel, self.stations, self.eikonal),
             bounds=[
                 (self.config["xlim_km"][0], self.config["xlim_km"][1]),
                 (self.config["ylim_km"][0], self.config["ylim_km"][1]),
@@ -105,24 +89,20 @@ class ADLoc(BaseEstimator):
         """
         X: data_frame with columns ["timestamp", "x_km", "y_km", "z_km", "type"]
         """
-        # dataframe
-        # xyz = X[["x_km", "y_km", "z_km"]].values
-        # v = X["vel"].values
-        # numpy
-        # xyz = X[:, :3]
-        # type = X[:, 3]
         station_index = X[:, 0]
-        xyz = self.stations[station_index, :3]
-        type = X[:, 1]
+        phase_type = X[:, 1]
 
-        v = np.array([self.vel[t] for t in type])
-        event_loc = self.events[event_index, :3]
-        event_t = self.events[event_index, 3]
-        # tt = np.linalg.norm(xyz - event_loc, axis=-1) / v + event_t
         if self.eikonal is None:
-            tt = np.linalg.norm(xyz - event_loc, axis=-1) / v + event_t
+            v = np.array([self.vel[t] for t in phase_type])
+            tt = (
+                np.linalg.norm(self.events[event_index, :3] - self.stations[station_index, :3], axis=-1) / v
+                + self.events[event_index, 3]
+            )
         else:
-            tt = traveltime(event_loc[np.newaxis, :], xyz, type, self.eikonal) + event_t
+            tt = (
+                traveltime(event_index, station_index, phase_type, self.events, self.stations, self.eikonal)
+                + self.events[event_index, 3]
+            )
 
         return tt
 
@@ -156,16 +136,17 @@ def init_eikonal2d(config):
         h = config["h"]
     else:
         h = 1.0
-    # nx = int((xlim[1] - xlim[0]) / h)
-    # ny = int((ylim[1] - ylim[0]) / h)
     nr = int(np.sqrt((xlim[1] - xlim[0]) ** 2 + (ylim[1] - ylim[0]) ** 2) / h)
     nz = int((zlim[1] - zlim[0]) / h)
+    rgrid = np.arange(nr) * h
+    zgrid = np.arange(nz) * h
 
+    print(f"{nr=}, {nz=}")
+    print(f"{len(stations) = }")
     vp = np.ones((nr, nz)) * vel["p"]
     vs = np.ones((nr, nz)) * vel["s"]
 
     up = 1000 * np.ones((nr, nz))
-    # up[nr//2, nz//2] = 0.0
     up[0, 0] = 0.0
 
     up = eikonal_solve(up, vp, h)
@@ -174,7 +155,6 @@ def init_eikonal2d(config):
     grad_up = [x.ravel() for x in grad_up]
 
     us = 1000 * np.ones((nr, nz))
-    # us[nr//2, nz//2] = 0.0
     us[0, 0] = 0.1
 
     us = eikonal_solve(us, vs, h)
@@ -187,8 +167,8 @@ def init_eikonal2d(config):
         "us": us,
         "grad_up": grad_up,
         "grad_us": grad_us,
-        "rgrid": np.arange(nr) * h,
-        "zgrid": np.arange(nz) * h,
+        "rgrid": rgrid,
+        "zgrid": zgrid,
         "nr": nr,
         "nz": nz,
         "h": h,
@@ -216,7 +196,7 @@ if __name__ == "__main__":
         config = json.load(f)
 
     eikonal = init_eikonal2d(config)
-    # eikonal = None
+    eikonal = None
 
     # %%
     stations["idx_sta"] = stations.index  # reindex in case the index does not start from 0 or is not continuous

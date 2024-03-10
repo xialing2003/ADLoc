@@ -6,6 +6,7 @@ test_data
 *.csv
 *.png
 *.json
+*.dat
 dist/
 ADLoc.egg-info
 eikonal/

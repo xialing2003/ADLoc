@@ -19,7 +19,14 @@ np.random.seed(0)
 
 @njit
 def calculate_unique_solution(a1, a2, a3, f, h):
-    a1, a2, a3 = np.sort([a1, a2, a3])
+    # a1, a2, a3 = np.sort([a1, a2, a3])
+    if a1 > a2:
+        a1, a2 = a2, a1
+    if a2 > a3:
+        a2, a3 = a3, a2
+    if a1 > a2:
+        a1, a2 = a2, a1
+
     x = a1 + f * h
     if x <= a2:
         return x

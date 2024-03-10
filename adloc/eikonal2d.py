@@ -127,10 +127,6 @@ def _interp(time_table, r, z, rgrid0, zgrid0, nr, nz, h):
     Q01 = time_table[_get_index(ir0, iz1, nr, nz)]
     Q10 = time_table[_get_index(ir1, iz0, nr, nz)]
     Q11 = time_table[_get_index(ir1, iz1, nr, nz)]
-    # Q00 = time_table[ir0, iz0]
-    # Q01 = time_table[ir0, iz1]
-    # Q10 = time_table[ir1, iz0]
-    # Q11 = time_table[ir1, iz1]
 
     t = (
         1.0
@@ -147,9 +143,23 @@ def _interp(time_table, r, z, rgrid0, zgrid0, nr, nz, h):
     return t
 
 
-def traveltime(event_loc, station_loc, phase_type, eikonal):
-    r = np.linalg.norm(event_loc[:, :2] - station_loc[:, :2], axis=-1, keepdims=False)
-    z = event_loc[:, 2] - station_loc[:, 2]
+# def traveltime(event_loc, station_loc, phase_type, eikonal):
+def traveltime(event_index, station_index, phase_type, events, stations, eikonal):
+    """
+    event_index: list of event index
+    station_index: list of station index
+    phase_type: list of phase type
+    events: list of event location
+    stations: list of station location
+    """
+    if isinstance(event_index, int):
+        event_index = np.array([event_index] * len(phase_type))
+    # r = np.linalg.norm(event_loc[:, :2] - station_loc[:, :2], axis=-1, keepdims=False)
+    # z = event_loc[:, 2] - station_loc[:, 2]
+    x = events[event_index, 0] - stations[station_index, 0]
+    y = events[event_index, 1] - stations[station_index, 1]
+    z = events[event_index, 2] - stations[station_index, 2]
+    r = np.sqrt(x**2 + y**2)
 
     rgrid0 = eikonal["rgrid"][0]
     zgrid0 = eikonal["zgrid"][0]
@@ -159,20 +169,33 @@ def traveltime(event_loc, station_loc, phase_type, eikonal):
 
     if isinstance(phase_type, list):
         phase_type = np.array(phase_type)
+    # if isinstance(station_index, list):
+    #     station_index = np.array(station_index)
+
+    tt = np.zeros(len(phase_type), dtype=np.float32)
     # p_index = phase_type == "p"
     # s_index = phase_type == "s"
     p_index = phase_type == 0
     s_index = phase_type == 1
-    tt = np.zeros(len(phase_type), dtype=np.float32)
+
     tt[p_index] = _interp(eikonal["up"], r[p_index], z[p_index], rgrid0, zgrid0, nr, nz, h)
     tt[s_index] = _interp(eikonal["us"], r[s_index], z[s_index], rgrid0, zgrid0, nr, nz, h)
 
     return tt
 
 
-def grad_traveltime(event_loc, station_loc, phase_type, eikonal):
-    r = np.linalg.norm(event_loc[:, :2] - station_loc[:, :2], axis=-1, keepdims=False)
-    z = event_loc[:, 2] - station_loc[:, 2]
+# def grad_traveltime(event_loc, station_loc, phase_type, eikonal):
+def grad_traveltime(event_index, station_index, phase_type, events, stations, eikonal):
+
+    if isinstance(event_index, int):
+        event_index = np.array([event_index] * len(phase_type))
+
+    # r = np.linalg.norm(event_loc[:, :2] - station_loc[:, :2], axis=-1, keepdims=False)
+    # z = event_loc[:, 2] - station_loc[:, 2]
+    x = events[event_index, 0] - stations[station_index, 0]
+    y = events[event_index, 1] - stations[station_index, 1]
+    z = events[event_index, 2] - stations[station_index, 2]
+    r = np.sqrt(x**2 + y**2)
 
     rgrid0 = eikonal["rgrid"][0]
     zgrid0 = eikonal["zgrid"][0]
@@ -182,21 +205,29 @@ def grad_traveltime(event_loc, station_loc, phase_type, eikonal):
 
     if isinstance(phase_type, list):
         phase_type = np.array(phase_type)
+    # if isinstance(station_index, list):
+    #     station_index = np.array(station_index)
+
+    dt_dr = np.zeros(len(phase_type))
+    dt_dz = np.zeros(len(phase_type))
+
     # p_index = phase_type == "p"
     # s_index = phase_type == "s"
     p_index = phase_type == 0
     s_index = phase_type == 1
-    dt_dr = np.zeros(len(phase_type))
-    dt_dz = np.zeros(len(phase_type))
+
     dt_dr[p_index] = _interp(eikonal["grad_up"][0], r[p_index], z[p_index], rgrid0, zgrid0, nr, nz, h)
     dt_dr[s_index] = _interp(eikonal["grad_us"][0], r[s_index], z[s_index], rgrid0, zgrid0, nr, nz, h)
     dt_dz[p_index] = _interp(eikonal["grad_up"][1], r[p_index], z[p_index], rgrid0, zgrid0, nr, nz, h)
     dt_dz[s_index] = _interp(eikonal["grad_us"][1], r[s_index], z[s_index], rgrid0, zgrid0, nr, nz, h)
 
-    dr_dxy = (event_loc[:, :2] - station_loc[:, :2]) / (r[:, np.newaxis] + 1e-6)
-    dt_dxy = dt_dr[:, np.newaxis] * dr_dxy
+    # dr_dxy = (event_loc[:, :2] - station_loc[:, :2]) / (r[:, np.newaxis] + 1e-6)
+    # dt_dxy = dt_dr[:, np.newaxis] * dr_dxy
+    # grad = np.column_stack((dt_dxy, dt_dz[:, np.newaxis]))
+    dt_dx = dt_dr * x / (r + 1e-6)
+    dt_dy = dt_dr * y / (r + 1e-6)
 
-    grad = np.column_stack((dt_dxy, dt_dz[:, np.newaxis]))
+    grad = np.column_stack((dt_dx, dt_dy, dt_dz))
 
     return grad
 
@@ -230,12 +261,14 @@ if __name__ == "__main__":
 
     num_event = 10
     event_loc = np.random.rand(num_event, 3) * np.array([nr * h / np.sqrt(2), nr * h / np.sqrt(2), nz * h])
+    event_index = np.arange(num_event)
     print(f"{event_loc = }")
     # event_loc = np.round(event_loc, 0)
     # station_loc = np.random.rand(1, 3) * np.array([nr*h/np.sqrt(2), nr*h/np.sqrt(2), 0])
     station_loc = np.array([0, 0, 0])
     print(f"{station_loc = }")
     station_loc = np.tile(station_loc, (num_event, 1))
+    station_index = [0] * num_event
     # phase_type = np.random.choice(["p", "s"], num_event, replace=True)
     # print(f"{list(phase_type) = }")
     phase_type = np.array(["p"] * (num_event // 2) + ["s"] * (num_event - num_event // 2))
@@ -265,8 +298,10 @@ if __name__ == "__main__":
     }
     mapping_int = {"p": 0, "s": 1}
     phase_type = np.array([mapping_int[x] for x in phase_type])
-    t = traveltime(event_loc, station_loc, phase_type, config)
-    grad_t = grad_traveltime(event_loc, station_loc, phase_type, config)
+    # t = traveltime(event_loc, station_loc, phase_type, config)
+    # grad_t = grad_traveltime(event_loc, station_loc, phase_type, config)
+    t = traveltime(event_index, station_index, phase_type, event_loc, station_loc, config)
+    grad_t = grad_traveltime(event_index, station_index, phase_type, event_loc, station_loc, config)
     print(f"Computed traveltime: {t = }")
     print(f"Computed grad traveltime: {grad_t = }")
 
