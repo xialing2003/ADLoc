@@ -159,8 +159,10 @@ def traveltime(event_loc, station_loc, phase_type, eikonal):
 
     if isinstance(phase_type, list):
         phase_type = np.array(phase_type)
-    p_index = phase_type == "p"
-    s_index = phase_type == "s"
+    # p_index = phase_type == "p"
+    # s_index = phase_type == "s"
+    p_index = phase_type == 0
+    s_index = phase_type == 1
     tt = np.zeros(len(phase_type), dtype=np.float32)
     tt[p_index] = _interp(eikonal["up"], r[p_index], z[p_index], rgrid0, zgrid0, nr, nz, h)
     tt[s_index] = _interp(eikonal["us"], r[s_index], z[s_index], rgrid0, zgrid0, nr, nz, h)
@@ -180,8 +182,10 @@ def grad_traveltime(event_loc, station_loc, phase_type, eikonal):
 
     if isinstance(phase_type, list):
         phase_type = np.array(phase_type)
-    p_index = phase_type == "p"
-    s_index = phase_type == "s"
+    # p_index = phase_type == "p"
+    # s_index = phase_type == "s"
+    p_index = phase_type == 0
+    s_index = phase_type == 1
     dt_dr = np.zeros(len(phase_type))
     dt_dz = np.zeros(len(phase_type))
     dt_dr[p_index] = _interp(eikonal["grad_up"][0], r[p_index], z[p_index], rgrid0, zgrid0, nr, nz, h)
@@ -204,7 +208,7 @@ if __name__ == "__main__":
     vel = {"p": 6.0, "s": 6.0 / 1.73}
     vp = np.ones((nr, nz)) * vel["p"]
     vs = np.ones((nr, nz)) * vel["s"]
-    h = 10.0
+    h = 1.0
 
     up = 1000 * np.ones((nr, nz))
     # up[nr//2, nz//2] = 0.0
@@ -217,7 +221,7 @@ if __name__ == "__main__":
 
     us = 1000 * np.ones((nr, nz))
     # us[nr//2, nz//2] = 0.0
-    us[0, 0] = 0.1
+    us[0, 0] = 0.0
 
     us = eikonal_solve(us, vs, h)
     grad_us = np.gradient(us, h, edge_order=2)
@@ -259,6 +263,8 @@ if __name__ == "__main__":
         "nz": nz,
         "h": h,
     }
+    mapping_int = {"p": 0, "s": 1}
+    phase_type = np.array([mapping_int[x] for x in phase_type])
     t = traveltime(event_loc, station_loc, phase_type, config)
     grad_t = grad_traveltime(event_loc, station_loc, phase_type, config)
     print(f"Computed traveltime: {t = }")

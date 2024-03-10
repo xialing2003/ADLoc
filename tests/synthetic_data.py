@@ -39,6 +39,12 @@ config["depth0"] = depth0
 
 proj = Proj(f"+proj=sterea +lon_0={config['longitude0']} +lat_0={config['latitude0']} +units=km")
 
+min_x_km, min_y_km = proj(longitude=config["minlongitude"], latitude=config["minlatitude"])
+max_x_km, max_y_km = proj(longitude=config["maxlongitude"], latitude=config["maxlatitude"])
+config["xlim_km"] = [min_x_km, max_x_km]
+config["ylim_km"] = [min_y_km, max_y_km]
+config["zlim_km"] = [config["mindepth"], config["maxdepth"]]
+
 with open(f"{result_path}/config.json", "w") as f:
     json.dump(config, f)
 
@@ -157,27 +163,30 @@ for i in range(num_event):
     x_km, y_km = proj(longitude=longitude, latitude=latitude)
     z_km = depth
     for j, station in stations.iterrows():
-        phase_type = np.random.choice(["P", "S"])
-        # travel_time = calc_travel_time(
-        #     time,
-        #     # latitude,
-        #     # longitude,
-        #     x_km,
-        #     y_km,
-        #     depth,
-        #     # station["latitude"],
-        #     # station["longitude"],
-        #     station["x_km"],
-        #     station["y_km"],
-        #     station["depth_km"],
-        #     phase=phase_type,
-        # )
-        travel_time = calc_time(
-            np.array([[x_km, y_km, z_km]]), np.array([[station["x_km"], station["y_km"], station["z_km"]]]), phase_type
-        )[0, 0]
-        arrival_time = time + timedelta(seconds=travel_time)
-        pick = [station["station_id"], arrival_time.strftime("%Y-%m-%dT%H:%M:%S.%f"), phase_type, 1.0, event_index]
-        picks.append(pick)
+        # phase_type = np.random.choice(["P", "S"])
+        for phase_type in ["P", "S"]:
+            # travel_time = calc_travel_time(
+            #     time,
+            #     # latitude,
+            #     # longitude,
+            #     x_km,
+            #     y_km,
+            #     depth,
+            #     # station["latitude"],
+            #     # station["longitude"],
+            #     station["x_km"],
+            #     station["y_km"],
+            #     station["depth_km"],
+            #     phase=phase_type,
+            # )
+            travel_time = calc_time(
+                np.array([[x_km, y_km, z_km]]),
+                np.array([[station["x_km"], station["y_km"], station["z_km"]]]),
+                phase_type,
+            )[0, 0]
+            arrival_time = time + timedelta(seconds=travel_time)
+            pick = [station["station_id"], arrival_time.strftime("%Y-%m-%dT%H:%M:%S.%f"), phase_type, 1.0, event_index]
+            picks.append(pick)
 
 # num_event = 100
 # r = 0.1

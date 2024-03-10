@@ -195,10 +195,23 @@ def _interp(time_table, x, y, z, xgrid0, ygrid0, zgrid0, nx, ny, nz, h):
     return t
 
 
-def traveltime(event_loc, station_loc, phase_type, eikonal):
-    x = event_loc[:, 0] - station_loc[:, 0]
-    y = event_loc[:, 1] - station_loc[:, 1]
-    z = event_loc[:, 2] - station_loc[:, 2]
+# def traveltime(event_loc, station_index, phase_type, eikonal):
+def traveltime(event_index, station_index, phase_type, events, stations, eikonal):
+    """
+    event_index: [N,]
+    station_index: [N,]
+    phase_type: [N,]
+    events: [M, 3]
+    stations: [K, 3]
+    eikonal: dict
+    """
+    # x = event_loc[:, 0] - station_loc[:, 0]
+    # y = event_loc[:, 1] - station_loc[:, 1]
+    # z = event_loc[:, 2] - station_loc[:, 2]
+    # x, y, z = event_loc[:, 0], event_loc[:, 1], event_loc[:, 2]
+    if isinstance(event_index, int):
+        event_index = np.array([event_index] * len(phase_type))
+    x, y, z = events[event_index, 0], events[event_index, 1], events[event_index, 2]
 
     xgrid0 = eikonal["xgrid"][0]
     ygrid0 = eikonal["ygrid"][0]
@@ -210,19 +223,38 @@ def traveltime(event_loc, station_loc, phase_type, eikonal):
 
     if isinstance(phase_type, list):
         phase_type = np.array(phase_type)
-    p_index = phase_type == "p"
-    s_index = phase_type == "s"
+    if isinstance(station_index, list):
+        station_index = np.array(station_index)
+
     tt = np.zeros(len(phase_type), dtype=np.float32)
-    tt[p_index] = _interp(eikonal["up"], x[p_index], y[p_index], z[p_index], xgrid0, ygrid0, zgrid0, nx, ny, nz, h)
-    tt[s_index] = _interp(eikonal["us"], x[s_index], y[s_index], z[s_index], xgrid0, ygrid0, zgrid0, nx, ny, nz, h)
+
+    p_idx = phase_type == 0
+    s_idx = phase_type == 1
+    station_unique = np.unique(station_index)
+    for i in station_unique:
+
+        sta_idx = station_index == i
+        sta_p_idx = sta_idx & p_idx
+        sta_s_idx = sta_idx & s_idx
+
+        tt[sta_p_idx] = _interp(
+            eikonal["up"][i, :], x[sta_p_idx], y[sta_p_idx], z[sta_p_idx], xgrid0, ygrid0, zgrid0, nx, ny, nz, h
+        )
+        tt[sta_s_idx] = _interp(
+            eikonal["us"][i, :], x[sta_s_idx], y[sta_s_idx], z[sta_s_idx], xgrid0, ygrid0, zgrid0, nx, ny, nz, h
+        )
 
     return tt
 
 
-def grad_traveltime(event_loc, station_loc, phase_type, eikonal):
-    x = event_loc[:, 0] - station_loc[:, 0]
-    y = event_loc[:, 1] - station_loc[:, 1]
-    z = event_loc[:, 2] - station_loc[:, 2]
+def grad_traveltime(event_index, station_index, phase_type, events, stations, eikonal):
+    # x = event_loc[:, 0] - station_loc[:, 0]
+    # y = event_loc[:, 1] - station_loc[:, 1]
+    # z = event_loc[:, 2] - station_loc[:, 2]
+    # x, y, z = event_loc[:, 0], event_loc[:, 1], event_loc[:, 2]
+    if isinstance(event_index, int):
+        event_index = np.array([event_index] * len(phase_type))
+    x, y, z = events[event_index, 0], events[event_index, 1], events[event_index, 2]
 
     xgrid0 = eikonal["xgrid"][0]
     ygrid0 = eikonal["ygrid"][0]
@@ -234,29 +266,39 @@ def grad_traveltime(event_loc, station_loc, phase_type, eikonal):
 
     if isinstance(phase_type, list):
         phase_type = np.array(phase_type)
-    p_index = phase_type == "p"
-    s_index = phase_type == "s"
+    if isinstance(station_index, list):
+        station_index = np.array(station_index)
+
     dt_dx = np.zeros(len(phase_type))
     dt_dy = np.zeros(len(phase_type))
     dt_dz = np.zeros(len(phase_type))
-    dt_dx[p_index] = _interp(
-        eikonal["grad_up"][0], x[p_index], y[p_index], z[p_index], xgrid0, ygrid0, zgrid0, nx, ny, nz, h
-    )
-    dt_dx[s_index] = _interp(
-        eikonal["grad_us"][0], x[s_index], y[s_index], z[s_index], xgrid0, ygrid0, zgrid0, nx, ny, nz, h
-    )
-    dt_dy[p_index] = _interp(
-        eikonal["grad_up"][1], x[p_index], y[p_index], z[p_index], xgrid0, ygrid0, zgrid0, nx, ny, nz, h
-    )
-    dt_dy[s_index] = _interp(
-        eikonal["grad_us"][1], x[s_index], y[s_index], z[s_index], xgrid0, ygrid0, zgrid0, nx, ny, nz, h
-    )
-    dt_dz[p_index] = _interp(
-        eikonal["grad_up"][2], x[p_index], y[p_index], z[p_index], xgrid0, ygrid0, zgrid0, nx, ny, nz, h
-    )
-    dt_dz[s_index] = _interp(
-        eikonal["grad_us"][2], x[s_index], y[s_index], z[s_index], xgrid0, ygrid0, zgrid0, nx, ny, nz, h
-    )
+
+    p_idx = phase_type == 0
+    s_idx = phase_type == 1
+    station_unique = np.unique(station_index)
+    for sta in station_unique:
+        sta_idx = station_index == sta
+        sta_p_idx = sta_idx & p_idx
+        sta_s_idx = sta_idx & s_idx
+
+        dt_dx[sta_p_idx] = _interp(
+            eikonal["grad_up"][sta, 0], x[sta_p_idx], y[sta_p_idx], z[sta_p_idx], xgrid0, ygrid0, zgrid0, nx, ny, nz, h
+        )
+        dt_dx[sta_s_idx] = _interp(
+            eikonal["grad_us"][sta, 0], x[sta_s_idx], y[sta_s_idx], z[sta_s_idx], xgrid0, ygrid0, zgrid0, nx, ny, nz, h
+        )
+        dt_dy[sta_p_idx] = _interp(
+            eikonal["grad_up"][sta, 1], x[sta_p_idx], y[sta_p_idx], z[sta_p_idx], xgrid0, ygrid0, zgrid0, nx, ny, nz, h
+        )
+        dt_dy[sta_s_idx] = _interp(
+            eikonal["grad_us"][sta, 1], x[sta_s_idx], y[sta_s_idx], z[sta_s_idx], xgrid0, ygrid0, zgrid0, nx, ny, nz, h
+        )
+        dt_dz[sta_p_idx] = _interp(
+            eikonal["grad_up"][sta, 2], x[sta_p_idx], y[sta_p_idx], z[sta_p_idx], xgrid0, ygrid0, zgrid0, nx, ny, nz, h
+        )
+        dt_dz[sta_s_idx] = _interp(
+            eikonal["grad_us"][sta, 2], x[sta_s_idx], y[sta_s_idx], z[sta_s_idx], xgrid0, ygrid0, zgrid0, nx, ny, nz, h
+        )
 
     grad = np.column_stack((dt_dx, dt_dy, dt_dz))
 
@@ -273,11 +315,11 @@ if __name__ == "__main__":
     vel = {"p": 6.0, "s": 6.0 / 1.73}
     vp = np.ones((nx, ny, nz)) * vel["p"]
     vs = np.ones((nx, ny, nz)) * vel["s"]
-    h = 0.1
+    h = 1.0
 
-    sta_ix = 0
-    sta_iy = 0
-    sta_iz = 0
+    sta_ix = 10
+    sta_iy = 10
+    sta_iz = 10
     station_loc = np.array([sta_ix, sta_iy, sta_iz]) * h
     up = 1000 * np.ones((nx, ny, nz))
     up[sta_ix, sta_iy, sta_iz] = 0.0
@@ -285,7 +327,9 @@ if __name__ == "__main__":
     up = eikonal_solve(up, vp, h)
     grad_up = np.gradient(up, h, edge_order=2)
     up = up.ravel()
-    grad_up = [x.ravel() for x in grad_up]
+    grad_up = np.array([x.ravel() for x in grad_up])
+    up = up[np.newaxis, :]
+    grad_up = grad_up[np.newaxis, :, :]
 
     us = 1000 * np.ones((nx, ny, nz))
     us[sta_ix, sta_iy, sta_iz] = 0.0
@@ -293,14 +337,20 @@ if __name__ == "__main__":
     us = eikonal_solve(us, vs, h)
     grad_us = np.gradient(us, h, edge_order=2)
     us = us.ravel()
-    grad_us = [x.ravel() for x in grad_us]
+    grad_us = np.array([x.ravel() for x in grad_us])
+    us = us[np.newaxis, :]
+    grad_us = grad_us[np.newaxis, :, :]
 
     num_event = 10
-    event_loc = np.random.rand(num_event, 3) * np.array([nx * h / np.sqrt(2), ny * h / np.sqrt(2), nz * h])
+    event_loc = (
+        np.random.rand(num_event, 3) * np.array([nx * h / np.sqrt(2), ny * h / np.sqrt(2), nz * h]) + station_loc
+    )
+    event_index = np.arange(num_event)
     print(f"{event_loc = }")
     print(f"{station_loc = }")
     # station_loc = np.random.rand(1, 3) * np.array([nx*h/np.sqrt(2), ny*h/np.sqrt(2), 0])
     station_loc = np.tile(station_loc, (num_event, 1))
+    station_index = [0] * len(event_loc)
     # phase_type = np.random.choice(["p", "s"], num_event, replace=True)
     phase_type = np.array(["p"] * (num_event // 2) + ["s"] * (num_event - num_event // 2))
     v = np.array([vel[x] for x in phase_type])
@@ -324,29 +374,14 @@ if __name__ == "__main__":
         "nz": nz,
         "h": h,
     }
-    t = traveltime(event_loc, station_loc, phase_type, config)
-    grad_t = grad_traveltime(event_loc, station_loc, phase_type, config)
+    mapping_int = {"p": 0, "s": 1}
+    phase_type = np.array([mapping_int[x] for x in phase_type])
+    t = traveltime(event_index, station_index, phase_type, event_loc, station_loc, config)
+    grad_t = grad_traveltime(event_index, station_index, phase_type, event_loc, station_loc, config)
     print(f"Computed traveltime: {t = }")
     print(f"Computed gradient: {grad_t = }")
 
     up = np.reshape(up, (nx, ny, nz))
-    # plt.figure()
-    # plt.pcolormesh(up[sta_ix, :, :])
-    # plt.gca().invert_yaxis()
-    # plt.colorbar()
-    # plt.savefig("slice_tp_x.png")
-
-    # plt.figure()
-    # plt.pcolormesh(up[:, sta_iy, :])
-    # plt.gca().invert_yaxis()
-    # plt.colorbar()
-    # plt.savefig("slice_tp_y.png")
-
-    # plt.figure()
-    # plt.pcolormesh(up[:, :, sta_iz])
-    # plt.gca().invert_yaxis()
-    # plt.colorbar()
-    # plt.savefig("slice_tp_z.png")
     fig, ax = plt.subplots(1, 3, figsize=(15, 5))
     cax0 = ax[0].pcolormesh(up[sta_ix, :, :])
     fig.colorbar(cax0, ax=ax[0])
@@ -363,23 +398,6 @@ if __name__ == "__main__":
     plt.savefig("slice_tp_3d.png")
 
     us = np.reshape(us, (nx, ny, nz))
-    # plt.figure()
-    # plt.pcolormesh(us[sta_ix, :, :])
-    # plt.gca().invert_yaxis()
-    # plt.colorbar()
-    # plt.savefig("slice_ts_x.png")
-
-    # plt.figure()
-    # plt.pcolormesh(us[:, sta_iy, :])
-    # plt.gca().invert_yaxis()
-    # plt.colorbar()
-    # plt.savefig("slice_ts_y.png")
-
-    # plt.figure()
-    # plt.pcolormesh(us[:, :, sta_iz])
-    # # plt.gca().invert_yaxis()
-    # plt.colorbar()
-    # plt.savefig("slice_ts_z.png")
     fig, ax = plt.subplots(1, 3, figsize=(15, 5))
     cax0 = ax[0].pcolormesh(us[sta_ix, :, :])
     fig.colorbar(cax0, ax=ax[0])
@@ -395,33 +413,33 @@ if __name__ == "__main__":
     ax[2].set_title("ts_z")
     plt.savefig("slice_ts_3d.png")
 
-    grad_up = [np.reshape(x, (nx, ny, nz)) for x in grad_up]
+    grad_up = np.reshape(grad_up, (1, 3, nx, ny, nz))
     fig, ax = plt.subplots(1, 3, figsize=(15, 5))
-    cax0 = ax[0].pcolormesh(grad_up[0][sta_ix, :, :])
+    cax0 = ax[0].pcolormesh(grad_up[0, 0][sta_ix, :, :])
     fig.colorbar(cax0, ax=ax[0])
     ax[0].invert_yaxis()
     ax[0].set_title("grad_tp_x")
-    cax1 = ax[1].pcolormesh(grad_up[1][sta_ix, :, :])
+    cax1 = ax[1].pcolormesh(grad_up[0, 1][sta_ix, :, :])
     fig.colorbar(cax1, ax=ax[1])
     ax[1].invert_yaxis()
     ax[1].set_title("grad_tp_y")
-    cax2 = ax[2].pcolormesh(grad_up[2][sta_ix, :, :])
+    cax2 = ax[2].pcolormesh(grad_up[0, 2][sta_ix, :, :])
     fig.colorbar(cax2, ax=ax[2])
     ax[2].invert_yaxis()
     ax[2].set_title("grad_tp_z")
     plt.savefig("slice_grad_tp_3d.png")
 
-    grad_us = [np.reshape(x, (nx, ny, nz)) for x in grad_us]
+    grad_us = np.reshape(grad_us, (1, 3, nx, ny, nz))
     fig, ax = plt.subplots(1, 3, figsize=(15, 5))
-    cax0 = ax[0].pcolormesh(grad_us[0][sta_ix, :, :])
+    cax0 = ax[0].pcolormesh(grad_us[0, 0][sta_ix, :, :])
     fig.colorbar(cax0, ax=ax[0])
     ax[0].invert_yaxis()
     ax[0].set_title("grad_ts_x")
-    cax1 = ax[1].pcolormesh(grad_us[1][sta_ix, :, :])
+    cax1 = ax[1].pcolormesh(grad_us[0, 1][sta_ix, :, :])
     fig.colorbar(cax1, ax=ax[1])
     ax[1].invert_yaxis()
     ax[1].set_title("grad_ts_y")
-    cax2 = ax[2].pcolormesh(grad_us[2][sta_ix, :, :])
+    cax2 = ax[2].pcolormesh(grad_us[0, 2][sta_ix, :, :])
     fig.colorbar(cax2, ax=ax[2])
     ax[2].invert_yaxis()
     ax[2].set_title("grad_ts_z")
