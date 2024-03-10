@@ -2,9 +2,11 @@
 import matplotlib
 import numpy as np
 import scipy
+from _ransac import RANSACRegressor
 from eikonal3d import eikonal_solve, grad_traveltime, traveltime
 from sklearn.base import BaseEstimator
-from sklearn.linear_model import RANSACRegressor
+
+# from sklearn.linear_model import RANSACRegressor
 from tqdm import tqdm
 
 np.random.seed(0)
@@ -12,7 +14,7 @@ np.random.seed(0)
 
 
 class ADLoc(BaseEstimator):
-    def __init__(self, config, stations, num_event=3, events=None, eikonal=None):
+    def __init__(self, config, stations, num_event=1, events=None, eikonal=None):
         """
         events: [x, y, z, t]
         """
@@ -296,13 +298,15 @@ if __name__ == "__main__":
     #     raise
 
     # %%
-    for idx_eve, picks_event in picks.groupby("idx_eve"):
-        event_loc = events.loc[idx_eve]
-        print(f"Event {event_loc['event_index']} at ({event_loc['x_km']}, {event_loc['y_km']})")
-        for _, pick in picks_event.iterrows():
-            station_loc = stations.loc[pick["idx_sta"]]
-            print(f"Station {station_loc['station_id']} at ({station_loc['x_km']}, {station_loc['y_km']})")
-        break
+    event_index = 1
+    num_event = len(events)
+    # for idx_eve, picks_event in picks.groupby("idx_eve"):
+    picks_event = picks[picks["idx_eve"] == event_index]
+    event_loc = events.loc[event_index]
+    print(f"Event {event_loc['event_index']} at ({event_loc['x_km']}, {event_loc['y_km']})")
+    for _, pick in picks_event.iterrows():
+        station_loc = stations.loc[pick["idx_sta"]]
+        print(f"Station {station_loc['station_id']} at ({station_loc['x_km']}, {station_loc['y_km']})")
 
     # %%
     plt.figure()
@@ -338,18 +342,17 @@ if __name__ == "__main__":
     X["type"] = X["type"].apply(lambda x: mapping_int[x.upper()])
 
     # estimator = ADLoc(config_, event_loc=np.array([x0, y0, z0]), event_t=(origin_time - t0).total_seconds())
-    estimator = ADLoc(config, stations=stations[["x_km", "y_km", "z_km"]].values, eikonal=eikonal)
+    estimator = ADLoc(config, stations=stations[["x_km", "y_km", "z_km"]].values, num_event=num_event, eikonal=eikonal)
     # tt = estimator.predict(X[["x_km", "y_km", "z_km", "type"]].values)
     # estimator.score(X[["x_km", "y_km", "z_km", "type"]].values, y=X["t_s"].values)
-    tt = estimator.predict(X[["idx_sta", "type"]].values)
-    estimator.score(X[["idx_sta", "type"]].values, y=X["t_s"].values)
+    tt = estimator.predict(X[["idx_sta", "type"]].values, event_index=event_index)
+    estimator.score(X[["idx_sta", "type"]].values, y=X["t_s"].values, event_index=event_index)
 
     print(f"True event loc: {event_loc[['x_km', 'y_km', 'z_km']].values}")
     print(f"Init event loc: {estimator.events[:3]}")
 
     # %%
     plt.figure()
-    event_index = 0
     X["dist_km"] = X[["x_km", "y_km", "z_km"]].apply(
         lambda x: np.linalg.norm(x - estimator.events[event_index, :3]), axis=1
     )
@@ -362,8 +365,8 @@ if __name__ == "__main__":
     # estimator.fit(X[["x_km", "y_km", "z_km", "type"]].values, y=X["t_s"].values)
     # estimator.score(X[["x_km", "y_km", "z_km", "type"]].values, y=X["t_s"].values)
     # tt = estimator.predict(X[["x_km", "y_km", "z_km", "type"]].values)
-    estimator.fit(X[["idx_sta", "type"]].values, y=X["t_s"].values)
-    estimator.score(X[["idx_sta", "type"]].values, y=X["t_s"].values)
+    estimator.fit(X[["idx_sta", "type"]].values, y=X["t_s"].values, event_index=event_index)
+    estimator.score(X[["idx_sta", "type"]].values, y=X["t_s"].values, event_index=event_index)
     tt = estimator.predict(X[["idx_sta", "type"]].values)
     print(f"True event loc: {event_loc[['x_km', 'y_km', 'z_km']].values}")
     print(f"Estimated event loc: {estimator.events[:3]}")
@@ -381,20 +384,22 @@ if __name__ == "__main__":
     # %%
     # reg = RANSACRegressor(estimator=ADLoc(config_, event_loc=np.array([[x0, y0, 0]]), event_t=0), random_state=0, min_samples=10, residual_threshold=4.0).fit(X[["x_km", "y_km", "z_km", "vel"]].values, X["t_s"].values)
     reg = RANSACRegressor(
-        estimator=ADLoc(config, stations=stations[["x_km", "y_km", "z_km"]].values, eikonal=eikonal),
+        estimator=ADLoc(
+            config, stations=stations[["x_km", "y_km", "z_km"]].values, num_event=num_event, eikonal=eikonal
+        ),
         random_state=0,
         min_samples=4,
         residual_threshold=1.0,
     )
     # reg.fit(X[["x_km", "y_km", "z_km", "type"]].values, X["t_s"].values)
-    reg.fit(X[["idx_sta", "type"]].values, X["t_s"].values)
+    reg.fit(X[["idx_sta", "type"]].values, X["t_s"].values, event_index=event_index)
     # reg = RANSACRegressor(estimator=ADLoc(config_), random_state=0, min_samples=4, residual_threshold=1.0).fit(X[["x_km", "y_km", "z_km", "type"]].values, X["t_s"].values)
     mask = reg.inlier_mask_
     estimator = reg.estimator_
     # estimator.score(X[["x_km", "y_km", "z_km", "type"]].values, y=X["t_s"].values)
     # tt = estimator.predict(X[["x_km", "y_km", "z_km", "type"]].values)
-    estimator.score(X[["idx_sta", "type"]].values, y=X["t_s"].values)
-    tt = estimator.predict(X[["idx_sta", "type"]].values)
+    estimator.score(X[["idx_sta", "type"]].values, y=X["t_s"].values, event_index=event_index)
+    tt = estimator.predict(X[["idx_sta", "type"]].values, event_index=event_index)
     print(f"True event loc: {event_loc[['x_km', 'y_km', 'z_km']].values}")
     print(f"Estimated event loc: {estimator.events[:3]}")
 
@@ -420,7 +425,7 @@ if __name__ == "__main__":
     config["vel"] = {mapping_int[k]: v for k, v in config["vel"].items()}
     X["type"] = X["type"].apply(lambda x: mapping_int[x.upper()])
 
-    num_noise = 10
+    num_noise = len(X) // 2
     noise = pd.DataFrame(
         {
             "x_km": np.random.rand(num_noise) * (X["x_km"].max() - X["x_km"].min()) + X["x_km"].min(),
@@ -447,26 +452,28 @@ if __name__ == "__main__":
 
     # reg = RANSACRegressor(estimator=ADLoc(config_, event_loc=np.array([[x0, y0, 0]]), event_t=0), random_state=0, min_samples=10, residual_threshold=4.0).fit(X[["x_km", "y_km", "z_km", "vel"]].values, X["t_s"].values)
     reg = RANSACRegressor(
-        estimator=ADLoc(config, stations=stations[["x_km", "y_km", "z_km"]].values, eikonal=eikonal),
+        estimator=ADLoc(
+            config, stations=stations[["x_km", "y_km", "z_km"]].values, num_event=num_event, eikonal=eikonal
+        ),
         random_state=0,
         min_samples=4,
         residual_threshold=1.0,
     )
     # reg.fit(X[["x_km", "y_km", "z_km", "type"]].values, X["t_s"].values)
-    reg.fit(X[["idx_sta", "type"]].values, X["t_s"].values)
+    reg.fit(X[["idx_sta", "type"]].values, X["t_s"].values, event_index=event_index)
     # reg = RANSACRegressor(estimator=ADLoc(config_), random_state=0, min_samples=4, residual_threshold=1.0).fit(X[["x_km", "y_km", "z_km", "type"]].values, X["t_s"].values)
     mask = reg.inlier_mask_
     estimator = reg.estimator_
     # estimator.score(X[["x_km", "y_km", "z_km", "type"]].values, y=X["t_s"].values)
     # tt = estimator.predict(X[["x_km", "y_km", "z_km", "type"]].values)
-    estimator.score(X[["idx_sta", "type"]].values, y=X["t_s"].values)
-    tt = estimator.predict(X[["idx_sta", "type"]].values)
+    estimator.score(X[["idx_sta", "type"]].values, y=X["t_s"].values, event_index=event_index)
+    tt = estimator.predict(X[["idx_sta", "type"]].values, event_index=event_index)
     print(f"True event loc: {event_loc[['x_km', 'y_km', 'z_km']].values}")
     print(f"Estimated event loc: {estimator.events[:3]}")
     # %%
     plt.figure()
     X["dist_km"] = X[["x_km", "y_km", "z_km"]].apply(
-        lambda x: np.linalg.norm(x - estimator.events[event_index, :3]), axis=1
+        lambda x: np.linalg.norm(x - event_loc[["x_km", "y_km", "z_km"]]), axis=1
     )
     colors = lambda x: "r" if x == 0 else "b"
     plt.scatter(X["t_s"], X["dist_km"], c=X["type"].apply(colors), marker="o")

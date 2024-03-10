@@ -6,8 +6,8 @@ import warnings
 from numbers import Integral, Real
 
 import numpy as np
-
-from ..base import (
+import sklearn
+from sklearn.base import (
     BaseEstimator,
     MetaEstimatorMixin,
     MultiOutputMixin,
@@ -15,22 +15,26 @@ from ..base import (
     _fit_context,
     clone,
 )
-from ..exceptions import ConvergenceWarning
-from ..utils import check_consistent_length, check_random_state
-from ..utils._param_validation import (
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.linear_model._base import LinearRegression
+from sklearn.utils import check_consistent_length, check_random_state
+from sklearn.utils._param_validation import (
     HasMethods,
     Interval,
     Options,
     RealNotInt,
     StrOptions,
 )
-from ..utils.metadata_routing import (
+from sklearn.utils.metadata_routing import (
     _raise_for_unsupported_routing,
     _RoutingNotSupportedMixin,
 )
-from ..utils.random import sample_without_replacement
-from ..utils.validation import _check_sample_weight, check_is_fitted, has_fit_parameter
-from ._base import LinearRegression
+from sklearn.utils.random import sample_without_replacement
+from sklearn.utils.validation import (
+    _check_sample_weight,
+    check_is_fitted,
+    has_fit_parameter,
+)
 
 _EPSILON = np.spacing(1)
 
@@ -306,7 +310,7 @@ class RANSACRegressor(
         # RansacRegressor.estimator is not validated yet
         prefer_skip_nested_validation=False
     )
-    def fit(self, X, y, sample_weight=None):
+    def fit(self, X, y, sample_weight=None, **kwargs):
         """Fit estimator using RANSAC algorithm.
 
         Parameters
@@ -437,7 +441,7 @@ class RANSACRegressor(
 
             # fit model for current random sample set
             if sample_weight is None:
-                estimator.fit(X_subset, y_subset)
+                estimator.fit(X_subset, y_subset, **kwargs)
             else:
                 estimator.fit(X_subset, y_subset, sample_weight=sample_weight[subset_idxs])
 
@@ -447,7 +451,7 @@ class RANSACRegressor(
                 continue
 
             # residuals of all data for current random sample model
-            y_pred = estimator.predict(X)
+            y_pred = estimator.predict(X, **kwargs)
             residuals_subset = loss_function(y, y_pred)
 
             # classify data into inliers and outliers
@@ -465,7 +469,7 @@ class RANSACRegressor(
             y_inlier_subset = y[inlier_idxs_subset]
 
             # score of inlier data set
-            score_subset = estimator.score(X_inlier_subset, y_inlier_subset)
+            score_subset = estimator.score(X_inlier_subset, y_inlier_subset, **kwargs)
 
             # same number of inliers but worse score -> skip current random
             # sample
@@ -520,7 +524,7 @@ class RANSACRegressor(
 
         # estimate final model using all inliers
         if sample_weight is None:
-            estimator.fit(X_inlier_best, y_inlier_best)
+            estimator.fit(X_inlier_best, y_inlier_best, **kwargs)
         else:
             estimator.fit(
                 X_inlier_best,
@@ -532,7 +536,7 @@ class RANSACRegressor(
         self.inlier_mask_ = inlier_mask_best
         return self
 
-    def predict(self, X):
+    def predict(self, X, **kwargs):
         """Predict using the estimated model.
 
         This is a wrapper for `estimator_.predict(X)`.
@@ -554,9 +558,9 @@ class RANSACRegressor(
             accept_sparse=True,
             reset=False,
         )
-        return self.estimator_.predict(X)
+        return self.estimator_.predict(X, **kwargs)
 
-    def score(self, X, y):
+    def score(self, X, y, **kwargs):
         """Return the score of the prediction.
 
         This is a wrapper for `estimator_.score(X, y)`.
@@ -581,7 +585,7 @@ class RANSACRegressor(
             accept_sparse=True,
             reset=False,
         )
-        return self.estimator_.score(X, y)
+        return self.estimator_.score(X, y, **kwargs)
 
     def _more_tags(self):
         return {
