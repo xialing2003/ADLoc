@@ -2,11 +2,11 @@
 import matplotlib
 import numpy as np
 import scipy
+from sklearn.base import BaseEstimator
 
 # from sklearn.linear_model import RANSACRegressor
-from _ransac import RANSACRegressor
-from eikonal2d import eikonal_solve, grad_traveltime, traveltime
-from sklearn.base import BaseEstimator
+from ._ransac import RANSACRegressor
+from .eikonal2d import eikonal_solve, grad_traveltime, traveltime
 
 np.random.seed(0)
 # matplotlib.use("Agg")
@@ -20,11 +20,16 @@ class ADLoc(BaseEstimator):
         xlim = config["xlim_km"]
         ylim = config["ylim_km"]
         zlim = config["zlim_km"]
-        vel = config["vel"]
+        if "vel" in config:
+            vel = config["vel"]
+        else:
+            vel = {"P": 6.0, "S": 6.0 / 1.73}
+            if eikonal is None:
+                print(f"Using default velocity: {vel}")
         self.config = config
         self.stations = stations
-
         self.vel = vel
+
         self.num_event = num_event
 
         self.eikonal = eikonal
@@ -74,12 +79,13 @@ class ADLoc(BaseEstimator):
             method="L-BFGS-B",
             jac=True,
             args=(X, y, self.vel, self.stations, self.eikonal),
-            bounds=[
-                (self.config["xlim_km"][0], self.config["xlim_km"][1]),
-                (self.config["ylim_km"][0], self.config["ylim_km"][1]),
-                (self.config["zlim_km"][0], self.config["zlim_km"][1]),
-                (None, None),
-            ],
+            # bounds=[
+            #     (self.config["xlim_km"][0], self.config["xlim_km"][1]),
+            #     (self.config["ylim_km"][0], self.config["ylim_km"][1]),
+            #     (self.config["zlim_km"][0], self.config["zlim_km"][1]),
+            #     (None, None),
+            # ],
+            bounds=self.config["bfgs_bounds"],
         )
 
         self.events[event_index, :] = opt.x
@@ -112,11 +118,11 @@ class ADLoc(BaseEstimator):
         """
         X: data_frame with columns ["timestamp", "x_km", "y_km", "z_km", "type"]
         """
-        if len(X) == 0:
-            return 0
+        if len(y) <= 1:
+            return -np.inf
         tt = self.predict(X, event_index)
-        R2 = 1 - np.sum((y - tt) ** 2) / np.sum((y - np.mean(y)) ** 2)
-        print(f"{R2=}")
+        R2 = 1 - np.sum((y - tt) ** 2) / (np.sum((y - np.mean(y)) ** 2) + 1e-6)
+        # print(f"{R2=}")
         return R2
 
 
@@ -133,7 +139,7 @@ def init_eikonal2d(config):
     if "vel" in config:
         vel = config["vel"]
     else:
-        vel = {"p": 6.0, "s": 6.0 / 1.73}
+        vel = {"P": 6.0, "S": 6.0 / 1.73}
     if "h" in config:
         h = config["h"]
     else:
@@ -145,8 +151,8 @@ def init_eikonal2d(config):
 
     print(f"{nr=}, {nz=}")
     print(f"{len(stations) = }")
-    vp = np.ones((nr, nz)) * vel["p"]
-    vs = np.ones((nr, nz)) * vel["s"]
+    vp = np.ones((nr, nz)) * vel["P"]
+    vs = np.ones((nr, nz)) * vel["S"]
 
     up = 1000 * np.ones((nr, nz))
     up[0, 0] = 0.0
