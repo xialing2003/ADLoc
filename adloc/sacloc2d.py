@@ -42,20 +42,55 @@ class ADLoc(BaseEstimator):
                 [[(xlim[0] + xlim[1]) / 2, (ylim[0] + ylim[1]) / 2, (zlim[0] + zlim[1]) / 2, 0]] * num_event
             )
 
+    # @staticmethod
+    # def l2_loss_grad(event, X, y, vel={0: 6.0, 1: 6.0 / 1.75}, stations=None, eikonal=None):
+    #     """
+    #     X: data_frame with columns ["timestamp", "x_km", "y_km", "z_km", "type"]
+    #     """
+    #     station_index = X[:, 0].astype(int)
+    #     phase_type = X[:, 1].astype(int)
+    #     phase_weight = X[:, 2]
+
+    #     if eikonal is None:
+    #         v = np.array([vel[t] for t in phase_type])
+    #         tt = np.linalg.norm(event[:3] - stations[station_index, :3], axis=-1) / v + event[3]
+    #     else:
+    #         tt = traveltime(0, station_index, phase_type, event[np.newaxis, :3], stations, eikonal) + event[3]
+    #     loss = 0.5 * np.sum((tt - y) ** 2 * phase_weight)
+
+    #     J = np.ones((len(X), 4))
+    #     if eikonal is None:
+    #         J[:, :3] = (
+    #             (event[:3] - stations[station_index, :3])
+    #             / np.linalg.norm(event[:3] - stations[station_index, :3], axis=-1, keepdims=True)
+    #             / v[:, np.newaxis]
+    #         )
+    #     else:
+    #         grad = grad_traveltime(0, station_index, phase_type, event[np.newaxis, :3], stations, eikonal)
+    #         J[:, :3] = grad
+
+    #     J = np.sum((tt - y)[:, np.newaxis] * J * phase_weight[:, np.newaxis], axis=0)
+    #     return loss, J
+
     @staticmethod
-    def loss_grad(event, X, y, vel={0: 6.0, 1: 6.0 / 1.75}, stations=None, eikonal=None):
-        """
-        X: data_frame with columns ["timestamp", "x_km", "y_km", "z_km", "type"]
-        """
-        station_index = X[:, 0]
-        phase_type = X[:, 1]
+    def huber_loss_grad(event, X, y, vel={0: 6.0, 1: 6.0 / 1.75}, stations=None, eikonal=None, sigma=1.0):
+
+        station_index = X[:, 0].astype(int)
+        phase_type = X[:, 1].astype(int)
+        phase_weight = X[:, 2]
 
         if eikonal is None:
             v = np.array([vel[t] for t in phase_type])
             tt = np.linalg.norm(event[:3] - stations[station_index, :3], axis=-1) / v + event[3]
         else:
             tt = traveltime(0, station_index, phase_type, event[np.newaxis, :3], stations, eikonal) + event[3]
-        loss = 0.5 * np.sum((tt - y) ** 2)
+        t_diff = tt - y
+        l1 = np.squeeze((np.abs(t_diff) > sigma))
+        l2 = np.squeeze((np.abs(t_diff) <= sigma))
+
+        loss = np.sum((sigma * np.abs(t_diff[l1]) - 0.5 * sigma**2) * phase_weight[l1]) + np.sum(
+            0.5 * t_diff[l2] ** 2 * phase_weight[l2]
+        )
 
         J = np.ones((len(X), 4))
         if eikonal is None:
@@ -68,13 +103,16 @@ class ADLoc(BaseEstimator):
             grad = grad_traveltime(0, station_index, phase_type, event[np.newaxis, :3], stations, eikonal)
             J[:, :3] = grad
 
-        J = np.sum((tt - y)[:, np.newaxis] * J, axis=0)
+        J = np.sum(
+            sigma * np.sign(t_diff[l1, np.newaxis]) * J[l1] * phase_weight[l1, np.newaxis], axis=0, keepdims=True
+        ) + np.sum(t_diff[l2, np.newaxis] * J[l2] * phase_weight[l2, np.newaxis], axis=0, keepdims=True)
+
         return loss, J
 
     def fit(self, X, y=None, event_index=0):
 
         opt = scipy.optimize.minimize(
-            self.loss_grad,
+            self.huber_loss_grad,
             x0=self.events[event_index],
             method="L-BFGS-B",
             jac=True,
@@ -97,8 +135,8 @@ class ADLoc(BaseEstimator):
         """
         X: data_frame with columns ["timestamp", "x_km", "y_km", "z_km", "type"]
         """
-        station_index = X[:, 0]
-        phase_type = X[:, 1]
+        station_index = X[:, 0].astype(int)
+        phase_type = X[:, 1].astype(int)
 
         if self.eikonal is None:
             v = np.array([self.vel[t] for t in phase_type])
