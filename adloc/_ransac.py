@@ -484,6 +484,9 @@ class RANSACRegressor(
             y_inlier_best = y_inlier_subset
             inlier_best_idxs_subset = inlier_idxs_subset
 
+            ## ADLoc
+            # estimator_best = clone(estimator)
+
             max_trials = min(
                 max_trials,
                 _dynamic_max_trials(n_inliers_best, n_samples, min_samples, self.stop_probability),
@@ -532,8 +535,17 @@ class RANSACRegressor(
                 sample_weight=sample_weight[inlier_best_idxs_subset],
             )
 
+        # self.estimator_ = estimator
+        # self.inlier_mask_ = inlier_mask_best
+
+        # ADLoc
+        y_pred = estimator.predict(X, **kwargs)
+        residuals = loss_function(y, y_pred)
+        inlier_mask = residuals <= residual_threshold
+        # self.estimator_ = estimator_best
         self.estimator_ = estimator
-        self.inlier_mask_ = inlier_mask_best
+        self.inlier_mask_ = inlier_mask
+
         return self
 
     def predict(self, X, **kwargs):

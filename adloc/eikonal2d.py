@@ -231,6 +231,56 @@ def grad_traveltime(event_index, station_index, phase_type, events, stations, ei
 
     return grad
 
+def init_eikonal2d(config):
+
+    rlim = [0, np.sqrt((config["xlim_km"][1] - config["xlim_km"][0]) ** 2 + (config["ylim_km"][1] - config["ylim_km"][0]) ** 2)]
+    zlim = config["zlim_km"]
+    h = config["h"]
+
+    rgrid = np.arange(rlim[0], rlim[1] + h, h)
+    zgrid = np.arange(zlim[0], zlim[1] + h, h)
+    nr = len(rgrid)
+    nz = len(zgrid)
+
+    vel = config["vel"]
+    zz, vp, vs = vel["Z"], vel["P"], vel["S"]
+    vp1d = np.interp(zgrid, zz, vp)
+    vs1d = np.interp(zgrid, zz, vs)
+    vp = np.tile(vp1d, (nr, 1))
+    vs = np.tile(vs1d, (nr, 1))
+
+    up = 1000 * np.ones((nr, nz))
+    up[0, 0] = 0.0
+
+    up = eikonal_solve(up, vp, h)
+    grad_up = np.gradient(up, h, edge_order=2)
+    up = up.ravel()
+    grad_up = [x.ravel() for x in grad_up]
+
+    us = 1000 * np.ones((nr, nz))
+    us[0, 0] = 0.0
+
+    us = eikonal_solve(us, vs, h)
+    grad_us = np.gradient(us, h, edge_order=2)
+    us = us.ravel()
+    grad_us = [x.ravel() for x in grad_us]
+
+    config.update(
+        {
+            "up": up,
+            "us": us,
+            "grad_up": grad_up,
+            "grad_us": grad_us,
+            "rgrid": rgrid,
+            "zgrid": zgrid,
+            "nr": nr,
+            "nz": nz,
+            "h": h
+        }
+    )
+
+    return config
+
 
 if __name__ == "__main__":
 
