@@ -14,24 +14,17 @@ from tqdm import tqdm
 def convert_dd(
     pairs,
     picks_by_event,
-    event_index1,
-    event_index2,
-    station_index,
-    phase_type,
-    phase_score,
-    dd_time,
     min_obs=8,
     max_obs=20,
     i=0,
-    lock=nullcontext(),
 ):
 
-    station_index_ = []
-    event_index1_ = []
-    event_index2_ = []
-    phase_type_ = []
-    phase_score_ = []
-    dd_time_ = []
+    station_index = []
+    event_index1 = []
+    event_index2 = []
+    phase_type = []
+    phase_score = []
+    dd_time = []
     for idx1, idx2 in tqdm(pairs, desc=f"CPU {i}", position=i):
         picks1 = picks_by_event.get_group(idx1)
         picks2 = picks_by_event.get_group(idx2)
@@ -42,20 +35,21 @@ def convert_dd(
         common["phase_score"] = (common["phase_score_x"] + common["phase_score_y"]) / 2.0
         common.sort_values("phase_score", ascending=False, inplace=True)
         common = common.head(max_obs)
-        event_index1_.extend(common["idx_eve_x"].values)
-        event_index2_.extend(common["idx_eve_y"].values)
-        station_index_.extend(common["idx_sta"].values)
-        phase_type_.extend(common["phase_type"].values)
-        phase_score_.extend(common["phase_score"].values)
-        dd_time_.extend(np.round(common["travel_time_x"].values - common["travel_time_y"].values, 5))
+        event_index1.extend(common["idx_eve_x"].values)
+        event_index2.extend(common["idx_eve_y"].values)
+        station_index.extend(common["idx_sta"].values)
+        phase_type.extend(common["phase_type"].values)
+        phase_score.extend(common["phase_score"].values)
+        dd_time.extend(np.round(common["travel_time_x"].values - common["travel_time_y"].values, 5))
 
-    with lock:
-        event_index1.extend(event_index1_)
-        event_index2.extend(event_index2_)
-        station_index.extend(station_index_)
-        phase_type.extend(phase_type_)
-        phase_score.extend(phase_score_)
-        dd_time.extend(dd_time_)
+    return {
+        "event_index1": event_index1,
+        "event_index2": event_index2,
+        "station_index": station_index,
+        "phase_type": phase_type,
+        "phase_score": phase_score,
+        "dd_time": dd_time,
+    }
 
 
 # %%
@@ -143,31 +137,17 @@ if __name__ == "__main__":
     # %%
     NCPU = mp.cpu_count()
     with mp.Manager() as manager:
-        event_index1 = manager.list()
-        event_index2 = manager.list()
-        station_index = manager.list()
-        phase_type = manager.list()
-        phase_score = manager.list()
-        dd_time = manager.list()
-        lock = manager.Lock()
 
         pool = mp.Pool(NCPU)
-        pool.starmap(
+        results = pool.starmap(
             convert_dd,
             [
                 (
                     pairs[i::NCPU],
                     picks_by_event,
-                    event_index1,
-                    event_index2,
-                    station_index,
-                    phase_type,
-                    phase_score,
-                    dd_time,
                     MIN_OBS,
                     MAX_OBS,
                     i,
-                    lock,
                 )
                 for i in range(NCPU)
             ],
@@ -176,12 +156,12 @@ if __name__ == "__main__":
         pool.join()
 
         print("Collecting results")
-        event_index1 = np.array(event_index1, dtype=int)
-        event_index2 = np.array(event_index2, dtype=int)
-        station_index = np.array(station_index, dtype=int)
-        phase_type = np.array(phase_type, dtype=str)
-        phase_score = np.array(phase_score, dtype=float)
-        dd_time = np.array(dd_time, dtype=float)
+        event_index1 = np.concatenate([r["event_index1"] for r in results])
+        event_index2 = np.concatenate([r["event_index2"] for r in results])
+        station_index = np.concatenate([r["station_index"] for r in results])
+        phase_type = np.concatenate([r["phase_type"] for r in results])
+        phase_score = np.concatenate([r["phase_score"] for r in results])
+        dd_time = np.concatenate([r["dd_time"] for r in results])
         print(f"Saving to disk: {len(event_index1)} pairs")
         np.savez_compressed(
             os.path.join(catalog_path, "adloc_dt.npz"),
