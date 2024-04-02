@@ -208,3 +208,92 @@ def optimize(args, config, data_loader, data_loader_dd, travel_time):
                 torch.randn_like(travel_time.event_loc.weight.data[:, 2]) * (args.epochs - i) / args.epochs
             )
             travel_time.event_loc.weight.data[:, 2].clamp_(min=config["z(km)"][0], max=config["z(km)"][1])
+
+
+def optimize_dd(data_loader, travel_time, config):
+
+    optimizer = optim.LBFGS(params=travel_time.parameters(), max_iter=1000, line_search_fn="strong_wolfe")
+
+    # init loss
+    loss = 0
+    for meta in data_loader:
+        station_index = meta["idx_sta"]
+        event_index = meta["idx_eve"]
+        phase_time = meta["phase_time"]
+        phase_type = meta["phase_type"]
+        phase_weight = meta["phase_weight"]
+
+        loss += travel_time(
+            station_index,
+            event_index,
+            phase_type,
+            phase_time,
+            phase_weight,
+        )["loss"]
+
+    # if args.distributed:
+    #     dist.barrier()
+    #     dist.all_reduce(loss)
+    print(f"Init loss: {loss}")
+
+    ## invert loss
+    def closure():
+        optimizer.zero_grad()
+        loss = 0
+        for meta in data_loader:
+            station_index = meta["idx_sta"]
+            event_index = meta["idx_eve"]
+            phase_time = meta["phase_time"]
+            phase_type = meta["phase_type"]
+            phase_weight = meta["phase_weight"]
+
+            loss += travel_time(
+                station_index,
+                event_index,
+                phase_type,
+                phase_time,
+                phase_weight,
+            )["loss"]
+
+        # if args.distributed:
+        #     dist.barrier()
+        #     dist.all_reduce(loss)
+
+        loss.backward()
+
+        # travel_time.event_loc.weight.grad.data -= travel_time.event_loc.weight.grad.data.mean()
+        # travel_time.event_time.weight.grad.data -= travel_time.event_time.weight.grad.data.mean()
+
+        return loss
+
+    optimizer.step(closure)
+
+    ## updated loss
+    loss = 0
+    for meta in data_loader:
+        station_index = meta["idx_sta"]
+        event_index = meta["idx_eve"]
+        phase_time = meta["phase_time"]
+        phase_type = meta["phase_type"]
+        phase_weight = meta["phase_weight"]
+
+        loss += travel_time(
+            station_index,
+            event_index,
+            phase_type,
+            phase_time,
+            phase_weight,
+        )["loss"]
+
+    # if args.distributed:
+    #     dist.barrier()
+    #     dist.all_reduce(loss)
+
+    print(f"Invert loss: {loss}")
+
+    # set variable range
+    # travel_time.event_loc.weight.data[:, 2] += (
+    #     (torch.rand_like(travel_time.event_loc.weight.data[:, 2]) - 0.5) * (args.epochs - 1 - i) / args.epochs
+    # )
+    travel_time.event_loc.weight.data[:, 2].clamp_(min=config["zlim_km"][0], max=config["zlim_km"][1])
+    # travel_time.event_loc.weight.data[:, 2].clamp_(min=config["mindepth"], max=config["maxdepth"])

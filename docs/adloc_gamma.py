@@ -24,6 +24,9 @@ if __name__ == "__main__":
     data_path = "test_data/ridgecrest/"
     stations = pd.read_csv(os.path.join(data_path, "stations.csv"))
     stations["depth_km"] = -stations["elevation_m"] / 1000
+    result_path = "results/ridgecrest/"
+    if not os.path.exists(result_path):
+        os.makedirs(result_path)
     figure_path = "figures/ridgecrest/"
     if not os.path.exists(figure_path):
         os.makedirs(figure_path)
@@ -102,7 +105,6 @@ if __name__ == "__main__":
     plt.savefig(os.path.join(figure_path, "stations.png"), bbox_inches="tight", dpi=300)
 
     # %%
-    data_path = "results/ridgecrest/"
     picks = pd.read_csv(os.path.join(data_path, "gamma_picks.csv"), parse_dates=["phase_time"])
     events = pd.read_csv(os.path.join(data_path, "gamma_events.csv"), parse_dates=["time"])
     picks["phase_type"] = picks["phase_type"].map(mapping_phase_type_int)
@@ -277,5 +279,20 @@ if __name__ == "__main__":
             print(f"Mean station term: {np.mean(np.abs(station_term['residual_s']))}")
             break
         iter += 1
+
+    # %%
+    picks.rename({"mask": "adloc_mask", "residual_s": "adloc_residual_s"}, axis=1, inplace=True)
+    picks["phase_type"] = picks["phase_type"].map({0: "P", 1: "S"})
+    picks.drop(["idx_eve", "idx_sta"], axis=1, inplace=True, errors="ignore")
+    locations[["longitude", "latitude"]] = locations.apply(
+        lambda x: pd.Series(proj(x["x_km"], x["y_km"], inverse=True)), axis=1
+    )
+    locations["depth_km"] = locations["z_km"]
+    locations.drop(["idx_eve", "x_km", "y_km", "z_km"], axis=1, inplace=True, errors="ignore")
+    stations.drop(["idx_sta", "x_km", "y_km", "z_km"], axis=1, inplace=True, errors="ignore")
+    stations.rename({"station_term": "adloc_station_term_s"}, axis=1, inplace=True)
+    picks.to_csv(os.path.join(data_path, "adloc_picks.csv"), index=False)
+    locations.to_csv(os.path.join(data_path, "adloc_events.csv"), index=False)
+    stations.to_csv(os.path.join(data_path, "adloc_stations.csv"), index=False)
 
 # %%
