@@ -265,102 +265,43 @@ class PhaseDataset(Dataset):
 class PhaseDatasetDD(Dataset):
     def __init__(
         self,
+        pairs,
         picks,
         events,
         stations,
         batch_size=1000,
-        min_pair_dist=10,  # km
-        max_neighbors=500,
         config=None,
     ):
+        self.pairs = pairs
         self.picks = picks
         self.events = events
         self.stations = stations
         self.config = config
         self.batch_size = batch_size
-        self.min_pair_dist = min_pair_dist
-        self.max_neighbors = max_neighbors
 
-        # preprocess
-        # t0 = self.picks["phase_time"].min()
-        # self.picks["phase_time"] = (self.picks["phase_time"] - t0).dt.total_seconds()
-        self.picks_by_event = picks.groupby("idx_eve")
-
-        self.neigh = NearestNeighbors(radius=self.min_pair_dist, n_neighbors=self.max_neighbors, n_jobs=-1)
-        self.neigh.fit(self.events[["x_km", "y_km", "z_km"]].values)
-        self.pairs = []
-        neigh_ind = self.neigh.radius_neighbors(sort_results=True)[1]
-        for i, neighs in enumerate(tqdm(neigh_ind, desc="Generating pairs")):
-            for j in neighs[:max_neighbors]:
-                if i < j:
-                    self.pairs.append((i, j))
-
-        self.pairs_batch = np.array_split(self.pairs, (len(self.pairs) - 1) // self.batch_size + 1)
+        self.idx_batch = np.array_split(np.arange(len(self.pairs)), (len(self.pairs) - 1) // self.batch_size + 1)
 
         print(f"Generated {len(self.pairs)} pairs")
-        print(f"Split into {len(self.pairs_batch)} batches of size {self.batch_size}")
-        self.read_data()
+        print(f"Split into {len(self.idx_batch)} batches of size {self.batch_size}")
 
     def __len__(self):
-        return len(self.pairs_batch)
-
-    def read_data(self):
-        meta = {}
-        for i, pairs in enumerate(tqdm(self.pairs_batch, desc="Reading picks")):
-            event_index = []
-            station_index = []
-            phase_score = []
-            phase_time = []
-            phase_type = []
-            for idx1, idx2 in pairs:
-
-                picks1 = self.picks_by_event.get_group(idx1)
-                picks2 = self.picks_by_event.get_group(idx2)
-
-                common = picks1.merge(picks2, on=["idx_sta", "phase_type"], how="inner")
-                phase_time.append(common["phase_time_x"].values - common["phase_time_y"].values)
-                phase_score.append((common["phase_score_x"].values + common["phase_score_y"].values) / 2.0)
-                phase_type.append(common["phase_type"].values)
-                station_index.append(common["idx_sta"].values)
-                # station_index.extend(common[["idx_sta", "idx_sta"]].values)
-                event_index.extend([[idx1, idx2]] * len(common))
-
-            if len(phase_time) == 0:
-                station_index = torch.tensor([], dtype=torch.long)
-                event_index = torch.tensor([], dtype=torch.long)
-                phase_weight = torch.tensor([], dtype=torch.float32)
-                phase_time = torch.tensor([], dtype=torch.float32)
-                phase_type = torch.tensor([], dtype=torch.long)
-            elif len(phase_time) == 1:
-                phase_type = np.array(phase_type)
-                event_index = np.array(event_index)
-                station_index = torch.tensor(station_index, dtype=torch.long)
-                event_index = torch.tensor(event_index, dtype=torch.long)
-                phase_weight = torch.tensor(phase_score, dtype=torch.float32)
-                phase_time = torch.tensor(phase_time, dtype=torch.float32)
-                phase_type = torch.tensor(phase_type, dtype=torch.long)
-            else:
-                station_index = np.concatenate(station_index)
-                phase_time = np.concatenate(phase_time)
-                phase_score = np.concatenate(phase_score)
-                phase_type = np.concatenate(phase_type)
-                event_index = np.array(event_index)
-
-                station_index = torch.tensor(station_index, dtype=torch.long)
-                phase_time = torch.tensor(phase_time, dtype=torch.float32)
-                phase_weight = torch.tensor(phase_score, dtype=torch.float32)
-                phase_type = torch.tensor(phase_type, dtype=torch.long)
-                event_index = torch.tensor(event_index, dtype=torch.long)
-
-            meta[i] = {
-                "idx_eve": event_index,
-                "idx_sta": station_index,
-                "phase_time": phase_time,
-                "phase_type": phase_type,
-                "phase_weight": phase_weight,
-            }
-
-        self.meta = meta
+        return len(self.idx_batch)
 
     def __getitem__(self, i):
-        return self.meta[i]
+
+        idx = self.idx_batch[i]
+        idx1_eve = self.pairs["event_index1"][idx]
+        idx2_eve = self.pairs["event_index2"][idx]
+        idx_eve = np.stack([idx1_eve, idx2_eve], axis=1)
+        idx_sta = self.pairs["station_index"][idx]
+        phase_weight = self.pairs["phase_score"][idx]
+        phase_type = self.pairs["phase_type"][idx]
+        phase_time = self.pairs["dd_time"][idx]
+
+        return {
+            "idx_eve": torch.tensor(idx_eve, dtype=torch.long),
+            "idx_sta": torch.tensor(idx_sta, dtype=torch.long),
+            "phase_type": torch.tensor(phase_type, dtype=torch.long),
+            "phase_weight": torch.tensor(phase_weight, dtype=torch.float32),
+            "phase_time": torch.tensor(phase_time, dtype=torch.float32),
+        }

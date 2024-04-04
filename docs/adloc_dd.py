@@ -1,6 +1,7 @@
 # %%
 import json
 import os
+import pickle
 
 import numpy as np
 import pandas as pd
@@ -19,13 +20,13 @@ torch.manual_seed(0)
 np.random.seed(0)
 
 # %%
-# if __name__ == "__main__":
+if __name__ == "__main__":
 
     # %%
-    data_path = "../tests/results/"
-    catalog_path = "../tests/results/"
-    # data_path = "test_data/ridgecrest"
-    # catalog_path = "results/ridgecrest"
+    # data_path = "../tests/results/"
+    # catalog_path = "../tests/results/"
+    data_path = "test_data/ridgecrest"
+    catalog_path = "results/ridgecrest"
     stations = pd.read_csv(os.path.join(data_path, "stations.csv"))
     stations["depth_km"] = -stations["elevation_m"] / 1000
     result_path = "results/synthetic/"
@@ -100,42 +101,59 @@ np.random.seed(0)
     plt.savefig(os.path.join(figure_path, "stations.png"), bbox_inches="tight", dpi=300)
 
     # %%
-    picks = pd.read_csv(os.path.join(data_path, "picks.csv"), parse_dates=["phase_time"])
-    events = pd.read_csv(os.path.join(data_path, "events.csv"), parse_dates=["time"])
-    # picks = pd.read_csv(os.path.join(catalog_path, "adloc_picks.csv"), parse_dates=["phase_time"])
-    # events = pd.read_csv(os.path.join(catalog_path, "adloc_events.csv"), parse_dates=["time"])
+    # picks = pd.read_csv(os.path.join(data_path, "picks.csv"), parse_dates=["phase_time"])
+    # events = pd.read_csv(os.path.join(data_path, "events.csv"), parse_dates=["time"])
+    # # picks = pd.read_csv(os.path.join(catalog_path, "adloc_picks.csv"), parse_dates=["phase_time"])
+    # # events = pd.read_csv(os.path.join(catalog_path, "adloc_events.csv"), parse_dates=["time"])
 
-    events[["x_km", "y_km"]] = events.apply(lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1)
-    events["z_km"] = events["depth_km"]
-    picks = picks[picks["event_index"] != -1]
-    picks["phase_type"] = picks["phase_type"].map(mapping_phase_type_int)
+    # events[["x_km", "y_km"]] = events.apply(
+    #     lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
+    # )
+    # events["z_km"] = events["depth_km"]
+    # picks = picks[picks["event_index"] != -1]
+    # picks["phase_type"] = picks["phase_type"].map(mapping_phase_type_int)
 
-    # %%
-    stations["station_term"] = 0.0
-    # stations["station_term_p"] = 0.0
-    # stations["station_term_s"] = 0.0
-    stations["idx_sta"] = stations.index  # reindex in case the index does not start from 0 or is not continuous
-    events["idx_eve"] = events.index  # reindex in case the index does not start from 0 or is not continuous
+    # # %%
+    # stations["station_term"] = 0.0
+    # # stations["station_term_p"] = 0.0
+    # # stations["station_term_s"] = 0.0
+    # stations["idx_sta"] = stations.index  # reindex in case the index does not start from 0 or is not continuous
+    # events["idx_eve"] = events.index  # reindex in case the index does not start from 0 or is not continuous
 
-    picks = picks.merge(events[["event_index", "idx_eve"]], on="event_index")
-    picks = picks.merge(stations[["station_id", "idx_sta"]], on="station_id")
+    # picks = picks.merge(events[["event_index", "idx_eve"]], on="event_index")
+    # picks = picks.merge(stations[["station_id", "idx_sta"]], on="station_id")
 
-    # %%
-    picks["phase_time"] = picks.apply(lambda x: (x["phase_time"] - events.loc[x["idx_eve"], "time"]).total_seconds(), axis=1)
+    # # %%
+    # picks["phase_time"] = picks.apply(
+    #     lambda x: (x["phase_time"] - events.loc[x["idx_eve"], "time"]).total_seconds(), axis=1
+    # )
 
-    # %% backup old events
-    events_old = events.copy()
-    events_old[["x_km", "y_km"]] = events_old.apply(
-        lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
-    )
-    events_old["z_km"] = events["depth_km"]
+    # # %% backup old events
+    # events_old = events.copy()
+    # events_old[["x_km", "y_km"]] = events_old.apply(
+    #     lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
+    # )
+    # events_old["z_km"] = events["depth_km"]
 
     # %%
     # utils.init_distributed_mode(args)
     # print(args)
-    
+
+    # %%
+    data_path = "results/ridgecrest"
+    picks = pd.read_csv(os.path.join(data_path, "adloc_picks.csv"), parse_dates=["phase_time"])
+    events = pd.read_csv(os.path.join(data_path, "adloc_events.csv"), parse_dates=["time"])
+    stations = pd.read_csv(os.path.join(data_path, "adloc_stations.csv"))
+    # pairs = np.load(os.path.join(data_path, "adloc_dt.npz"))
+    dtypes = pickle.load(open(os.path.join(data_path, "adloc_dtypes.pkl"), "rb"))
+    pairs = np.memmap(os.path.join(data_path, "adloc_dt.dat"), mode="r", dtype=dtypes)
+    print(dtypes)
+    print(len(pairs["dd_time"]))
+
+    # %%
+
     # events[["x_km", "y_km", "z_km"]] = events[["x_km", "y_km", "z_km"]].values * 0
-    phase_dataset = PhaseDatasetDD(picks, events, stations)
+    phase_dataset = PhaseDatasetDD(pairs, picks, events, stations)
     # if args.distributed:
     #     sampler = torch.utils.data.distributed.DistributedSampler(phase_dataset, shuffle=False)
     # else:
@@ -184,7 +202,7 @@ np.random.seed(0)
 
     # %%
     fig, ax = plt.subplots(3, 1, figsize=(6, 15), squeeze=False)
-    ax[0, 0].scatter(event_loc_init[:, 0], event_loc_init[:, 1],  s=100, marker="o", label="Init")
+    ax[0, 0].scatter(event_loc_init[:, 0], event_loc_init[:, 1], s=100, marker="o", label="Init")
     ax[0, 0].scatter(events["x_km"], events["y_km"], s=100, marker="o", label="Inverted")
     ax[0, 0].scatter(events_old["x_km"], events_old["y_km"], s=100, marker="x", label="True")
     ax[0, 0].scatter(stations["x_km"], stations["y_km"], c=stations["depth_km"], cmap="viridis_r", s=100, marker="^")
@@ -192,14 +210,14 @@ np.random.seed(0)
     ax[0, 0].set_ylabel("Y (km)")
     ax[0, 0].legend()
 
-    ax[1, 0].scatter(event_loc_init[:, 0], event_loc_init[:, 2],  s=100, marker="o", label="Init")
+    ax[1, 0].scatter(event_loc_init[:, 0], event_loc_init[:, 2], s=100, marker="o", label="Init")
     ax[1, 0].scatter(events["x_km"], events["z_km"], s=100, marker="o", label="Inverted")
     ax[1, 0].scatter(events_old["x_km"], events_old["z_km"], s=100, marker="x", label="True")
     ax[1, 0].set_xlabel("X (km)")
     ax[1, 0].set_ylabel("Z (km)")
     ax[1, 0].legend()
 
-    ax[2, 0].scatter(event_loc_init[:, 1], event_loc_init[:, 2],  s=100, marker="o", label="Init")
+    ax[2, 0].scatter(event_loc_init[:, 1], event_loc_init[:, 2], s=100, marker="o", label="Init")
     ax[2, 0].scatter(events["y_km"], events["z_km"], s=100, marker="o", label="Inverted")
     ax[2, 0].scatter(events_old["y_km"], events_old["z_km"], s=100, marker="x", label="True")
     ax[2, 0].set_xlabel("Y (km)")

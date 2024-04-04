@@ -13,3 +13,9 @@ ADLoc.egg-info
 build/
 eikonal/
 
+*.npy
+*.npz
+*.dat
+*.bin
+*.swp
+*.pkl

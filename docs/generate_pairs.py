@@ -1,6 +1,7 @@
 # %%
 import multiprocessing as mp
 import os
+import pickle
 from contextlib import nullcontext
 
 import numpy as np
@@ -61,6 +62,7 @@ if __name__ == "__main__":
     MIN_NEIGHBORS = 8
     MIN_OBS = 8
     MAX_OBS = 20
+    mapping_phase_type_int = {"P": 0, "S": 1}
 
     # %%
     # data_path = "../tests/results/"
@@ -75,6 +77,19 @@ if __name__ == "__main__":
     events = pd.read_csv(os.path.join(catalog_path, "adloc_events.csv"), parse_dates=["time"])
 
     picks = picks[picks["event_index"] != -1]
+    # check phase_type is P/S or 0/1
+    if not set(picks["phase_type"].unique()).issubset(set(mapping_phase_type_int.keys())):  # P/S
+        picks["phase_type"] = picks["phase_type"].map(mapping_phase_type_int)
+
+    # %%
+    if "idx_eve" in events.columns:
+        events = events.drop("idx_eve", axis=1)
+    if "idx_sta" in stations.columns:
+        stations = stations.drop("idx_sta", axis=1)
+    if "idx_eve" in picks.columns:
+        picks = picks.drop("idx_eve", axis=1)
+    if "idx_sta" in picks.columns:
+        picks = picks.drop("idx_sta", axis=1)
 
     # %%
     stations["idx_sta"] = stations.index  # reindex in case the index does not start from 0 or is not continuous
@@ -91,6 +106,7 @@ if __name__ == "__main__":
         lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
     )
     stations["depth_km"] = -stations["elevation_m"] / 1000
+    stations["z_km"] = stations["depth_km"]
     events[["x_km", "y_km"]] = events.apply(
         lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
     )
@@ -163,14 +179,45 @@ if __name__ == "__main__":
         phase_score = np.concatenate([r["phase_score"] for r in results])
         dd_time = np.concatenate([r["dd_time"] for r in results])
         print(f"Saving to disk: {len(event_index1)} pairs")
-        np.savez_compressed(
-            os.path.join(catalog_path, "adloc_dt.npz"),
-            event_index1=event_index1,
-            event_index2=event_index2,
-            station_index=station_index,
-            phase_type=phase_type,
-            phase_score=phase_score,
-            dd_time=dd_time,
+        # np.savez_compressed(
+        #     os.path.join(catalog_path, "adloc_dt.npz"),
+        #     event_index1=event_index1,
+        #     event_index2=event_index2,
+        #     station_index=station_index,
+        #     phase_type=phase_type,
+        #     phase_score=phase_score,
+        #     dd_time=dd_time,
+        # )
+
+        print(phase_type)
+
+        dtypes = np.dtype(
+            [
+                ("event_index1", np.int32),
+                ("event_index2", np.int32),
+                ("station_index", np.int32),
+                ("phase_type", np.int32),
+                ("phase_score", np.float32),
+                ("dd_time", np.float32),
+            ]
         )
+        pairs_array = np.memmap(
+            os.path.join(catalog_path, "adloc_dt.dat"),
+            mode="w+",
+            shape=(len(dd_time),),
+            dtype=dtypes,
+        )
+        pairs_array["event_index1"] = event_index1
+        pairs_array["event_index2"] = event_index2
+        pairs_array["station_index"] = station_index
+        pairs_array["phase_type"] = phase_type
+        pairs_array["phase_score"] = phase_score
+        pairs_array["dd_time"] = dd_time
+        with open(os.path.join(catalog_path, "adloc_dtypes.pkl"), "wb") as f:
+            pickle.dump(dtypes, f)
+
+        events.to_csv(os.path.join(catalog_path, "adloc_events.csv"), index=False)
+        stations.to_csv(os.path.join(catalog_path, "adloc_stations.csv"), index=False)
+        picks.to_csv(os.path.join(catalog_path, "adloc_picks.csv"), index=False)
 
 # %%
