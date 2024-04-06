@@ -54,6 +54,117 @@ class CalcTravelTime(Function):
 
 
 # %%
+class TravelTime(nn.Module):
+    def __init__(
+        self,
+        num_event,
+        num_station,
+        station_loc,
+        station_dt=None,
+        event_loc=None,
+        event_time=None,
+        velocity={"P": 6.0, "S": 6.0 / 1.73},
+        eikonal=None,
+        zlim=[0, 30],
+        dtype=torch.float32,
+    ):
+        super().__init__()
+        self.num_event = num_event
+        self.event_loc = nn.Embedding(num_event, 3)
+        self.event_time = nn.Embedding(num_event, 1)
+        self.station_loc = nn.Embedding(num_station, 3)
+        self.station_dt = nn.Embedding(num_station, 1)  # same statioin term for P and S
+        self.station_loc.weight = torch.nn.Parameter(torch.tensor(station_loc, dtype=dtype), requires_grad=False)
+        if station_dt is not None:
+            self.station_dt.weight = torch.nn.Parameter(torch.tensor(station_dt, dtype=dtype), requires_grad=False)
+        else:
+            self.station_dt.weight = torch.nn.Parameter(torch.zeros(num_station, 1, dtype=dtype), requires_grad=False)
+
+        if event_loc is not None:
+            self.event_loc.weight = torch.nn.Parameter(
+                torch.tensor(event_loc, dtype=dtype).contiguous(), requires_grad=True
+            )
+        else:
+            self.event_loc.weight = torch.nn.Parameter(
+                torch.zeros(num_event, 3, dtype=dtype).contiguous(), requires_grad=True
+            )
+        if event_time is not None:
+            self.event_time.weight = torch.nn.Parameter(
+                torch.tensor(event_time, dtype=dtype).contiguous(), requires_grad=True
+            )
+        else:
+            self.event_time.weight = torch.nn.Parameter(
+                torch.zeros(num_event, 1, dtype=dtype).contiguous(), requires_grad=True
+            )
+
+        self.velocity = [velocity["P"], velocity["S"]]
+        self.eikonal = eikonal
+        self.zlim = zlim
+
+    def calc_time(self, event_loc, station_loc, phase_type):
+        if self.eikonal is None:
+            dist = torch.linalg.norm(event_loc - station_loc, axis=-1, keepdim=True)
+            tt = dist / self.velocity[phase_type]
+            tt = tt.float()
+        else:
+            r = torch.linalg.norm(event_loc[:, :2] - station_loc[:, :2], axis=-1, keepdims=False)  ## nb, 2 (pair), 3
+            z = event_loc[:, 2] - station_loc[:, 2]
+
+            timetable = self.eikonal["up"] if phase_type == 0 else self.eikonal["us"]
+            timetable_grad = self.eikonal["grad_up"] if phase_type == 0 else self.eikonal["grad_us"]
+            timetable_grad_r = timetable_grad[0]
+            timetable_grad_z = timetable_grad[1]
+            rgrid0 = self.eikonal["rgrid"][0]
+            zgrid0 = self.eikonal["zgrid"][0]
+            nr = self.eikonal["nr"]
+            nz = self.eikonal["nz"]
+            h = self.eikonal["h"]
+            tt = CalcTravelTime.apply(r, z, timetable, timetable_grad_r, timetable_grad_z, rgrid0, zgrid0, nr, nz, h)
+
+            tt = tt.float().unsqueeze(-1)
+
+        return tt
+
+    def forward(
+        self,
+        station_index,
+        event_index=None,
+        phase_type=None,
+        phase_time=None,
+        phase_weight=None,
+    ):
+        loss = 0.0
+        pred_time = torch.zeros(len(phase_type), dtype=torch.float32)
+        resisudal = torch.zeros(len(phase_type), dtype=torch.float32)
+        for type in [0, 1]:  # phase_type: 0 for P, 1 for S
+            if len(phase_type[phase_type == type]) == 0:
+                continue
+            station_index_ = station_index[phase_type == type]  # (nb,)
+            event_index_ = event_index[phase_type == type]  # (nb,)
+            phase_weight_ = phase_weight[phase_type == type]  # (nb,)
+
+            station_loc_ = self.station_loc(station_index_)  # (nb, 3)
+            station_dt_ = self.station_dt(station_index_)  # (nb, 1)
+
+            event_loc_ = self.event_loc(event_index_)  # (nb, 3)
+            event_time_ = self.event_time(event_index_)  # (nb, 1)
+
+            tt_ = self.calc_time(event_loc_, station_loc_, type)  # (nb, 1)
+
+            t_ = event_time_ + tt_ + station_dt_  # (nb, 1)
+            t_ = t_.squeeze(1)  # (nb, )
+
+            pred_time[phase_type == type] = t_  # (nb, )
+
+            if phase_time is not None:
+                phase_time_ = phase_time[phase_type == type]
+                resisudal[phase_type == type] = phase_time_ - t_
+                loss += torch.sum(F.huber_loss(t_, phase_time_, reduction="none") * phase_weight_)
+
+        return {"phase_time": pred_time, "residual_s": resisudal, "loss": loss}
+
+
+# %%
 class TravelTimeDD(nn.Module):
     def __init__(
         self,
@@ -81,9 +192,13 @@ class TravelTimeDD(nn.Module):
             self.station_dt.weight = torch.nn.Parameter(torch.zeros(num_station, 1, dtype=dtype), requires_grad=False)
 
         if event_loc is not None:
-            self.event_loc.weight = torch.nn.Parameter(torch.tensor(event_loc, dtype=dtype).contiguous())
+            self.event_loc.weight = torch.nn.Parameter(
+                torch.tensor(event_loc, dtype=dtype).contiguous(), requires_grad=True
+            )
         else:
-            self.event_loc.weight = torch.nn.Parameter(torch.zeros(num_event, 3, dtype=dtype).contiguous())
+            self.event_loc.weight = torch.nn.Parameter(
+                torch.zeros(num_event, 3, dtype=dtype).contiguous(), requires_grad=True
+            )
         if event_time is not None:
             self.event_time.weight = torch.nn.Parameter(
                 torch.tensor(event_time, dtype=dtype).contiguous(), requires_grad=True

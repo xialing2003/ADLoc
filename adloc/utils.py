@@ -19,8 +19,12 @@ def invert(
     mask,
     error_idx,
     error_s,
+    event_init=None,
     lock=nullcontext(),
 ):
+    """
+    Earthquake location for a single event using RANSAC.
+    """
 
     def is_model_valid(estimator, X, y):
         score = estimator.score(X, y)
@@ -44,12 +48,16 @@ def invert(
         # stations[["x_km", "y_km", "z_km", "station_id", "station_term_p", "station_term_s"]], ## Separate P and S station term
         on="station_id",
     )
-    event_init = np.array([[np.median(X["x_km"]), np.median(X["y_km"]), np.mean(config["zlim_km"]), 0.0]])
+    t0 = X["phase_time"].min()
+    if event_init is None:
+        event_init = np.array([[np.median(X["x_km"]), np.median(X["y_km"]), np.mean(config["zlim_km"]), 0.0]])
+    else:
+        event_init = np.array([[event_init[0], event_init[1], event_init[2], (event_init[3] - t0).total_seconds()]])
+
     xstd = np.std(X["x_km"])
     ystd = np.std(X["y_km"])
     rstd = np.sqrt(xstd**2 + ystd**2)
 
-    t0 = X["phase_time"].min()
     X.rename(columns={"phase_type": "type", "phase_score": "score", "phase_time": "t_s"}, inplace=True)
     X["t_s"] = (X["t_s"] - t0).dt.total_seconds()
     X["t_s"] = X["t_s"] - X["station_term"]
@@ -69,7 +77,7 @@ def invert(
     estimator.set_params(**{"events": event_init})
     # ## Location using ADLoc
     # estimator.fit(X[["idx_sta", "type", "score"]].values, y=X["t_s"].values)
-    # mask = np.ones(len(picks_by_event)).astype(bool)
+    # inlier_mask = np.ones(len(picks_by_event)).astype(bool)
 
     ## Location using RANSAC
     num_picks = len(picks_by_event)
@@ -81,7 +89,6 @@ def invert(
         is_model_valid=is_model_valid,
         is_data_valid=is_data_valid,
     )
-
     try:
         reg.fit(X[["idx_sta", "type", "score"]].values, X["t_s"].values)
     except Exception as e:
@@ -109,7 +116,7 @@ def invert(
         mask.extend(inlier_mask.astype(int))
 
 
-def invert_location(picks, events, stations, config, estimator, iter=0):
+def invert_location(picks, events, stations, config, estimator, events_init=None, iter=0):
 
     if "ncpu" in config:
         NCPU = config["ncpu"]
@@ -125,8 +132,13 @@ def invert_location(picks, events, stations, config, estimator, iter=0):
         lock = manager.Lock()
         pbar = tqdm(total=len(picks.groupby("idx_eve")), desc=f"Iter {iter}")
         threads = []
+        event_init = None
         with mp.get_context("spawn").Pool(NCPU) as pool:
             for event_index, picks_by_event in picks.groupby("idx_eve"):
+                if events_init is not None:
+                    event_init = events_init[events_init["idx_eve"] == event_index][
+                        ["x_km", "y_km", "z_km", "time"]
+                    ].values[0]
                 thread = pool.apply_async(
                     invert,
                     args=(
@@ -140,6 +152,7 @@ def invert_location(picks, events, stations, config, estimator, iter=0):
                         mask,
                         error_idx,
                         error_s,
+                        event_init,
                         lock,
                     ),
                     callback=lambda x: pbar.update(),

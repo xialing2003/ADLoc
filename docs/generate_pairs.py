@@ -78,7 +78,7 @@ if __name__ == "__main__":
 
     picks = picks[picks["event_index"] != -1]
     # check phase_type is P/S or 0/1
-    if not set(picks["phase_type"].unique()).issubset(set(mapping_phase_type_int.keys())):  # P/S
+    if set(picks["phase_type"].unique()).issubset(set(mapping_phase_type_int.keys())):  # P/S
         picks["phase_type"] = picks["phase_type"].map(mapping_phase_type_int)
 
     # %%
@@ -188,8 +188,6 @@ if __name__ == "__main__":
         #     phase_score=phase_score,
         #     dd_time=dd_time,
         # )
-
-        print(phase_type)
 
         dtypes = np.dtype(
             [

@@ -21,13 +21,18 @@ from adloc.utils import invert_location
 # %%
 if __name__ == "__main__":
     # %%
-    data_path = "test_data/ridgecrest/"
+    # data_path = "test_data/ridgecrest/"
+    region = "synthetic"
+    data_path = f"test_data/{region}/"
+    config = json.load(open(os.path.join(data_path, "config.json")))
+    picks = pd.read_csv(os.path.join(data_path, "picks.csv"), parse_dates=["phase_time"])
+    events = pd.read_csv(os.path.join(data_path, "events.csv"), parse_dates=["time"])
     stations = pd.read_csv(os.path.join(data_path, "stations.csv"))
     stations["depth_km"] = -stations["elevation_m"] / 1000
-    result_path = "results/ridgecrest/"
+    result_path = f"results/{region}/"
     if not os.path.exists(result_path):
         os.makedirs(result_path)
-    figure_path = "figures/ridgecrest/"
+    figure_path = f"figures/{region}/"
     if not os.path.exists(figure_path):
         os.makedirs(figure_path)
 
@@ -41,49 +46,39 @@ if __name__ == "__main__":
     )
     stations["z_km"] = stations["elevation_m"].apply(lambda x: -x / 1e3)
 
-    xmin = stations["x_km"].min()
-    xmax = stations["x_km"].max()
-    ymin = stations["y_km"].min()
-    ymax = stations["y_km"].max()
-    x0 = (xmin + xmax) / 2
-    y0 = (ymin + ymax) / 2
-
     ## set up the config; you can also specify the region manually
-    config = {}
-    config["xlim_km"] = (2 * xmin - x0, 2 * xmax - x0)
-    config["ylim_km"] = (2 * ymin - y0, 2 * ymax - y0)
-    config["zlim_km"] = (stations["z_km"].min(), 20)
-    zmin = config["zlim_km"][0]
-    zmax = config["zlim_km"][1]
+    # xmin = stations["x_km"].min() - 50
+    # xmax = stations["x_km"].max() + 50
+    # ymin = stations["y_km"].min() - 50
+    # ymax = stations["y_km"].max() + 50
+    # x0 = (xmin + xmax) / 2
+    # y0 = (ymin + ymax) / 2
+    # config = {}
+    # config["xlim_km"] = (2 * xmin - x0, 2 * xmax - x0)
+    # config["ylim_km"] = (2 * ymin - y0, 2 * ymax - y0)
+    # config["zlim_km"] = (stations["z_km"].min(), 20)
+    # zmin = config["zlim_km"][0]
+    # zmax = config["zlim_km"][1]
 
-    config["bfgs_bounds"] = (
-        (config["xlim_km"][0] - 1, config["xlim_km"][1] + 1),  # x
-        (config["ylim_km"][0] - 1, config["ylim_km"][1] + 1),  # y
-        # (config["zlim_km"][0], config["zlim_km"][1] + 1),  # z
-        (0, config["zlim_km"][1] + 1),
-        (None, None),  # t
-    )
-
-    mapping_phase_type_int = {"P": 0, "S": 1}
-    config["vel"] = {"P": 6.0, "S": 6.0 / 1.73}
-    config["vel"] = {mapping_phase_type_int[k]: v for k, v in config["vel"].items()}
+    # config["vel"] = {"P": 6.0, "S": 6.0 / 1.73}
 
     # %%
-    ## Eikonal for 1D velocity model
-    zz = [0.0, 5.5, 16.0, 32.0]
-    vp = [5.5, 5.5, 6.7, 7.8]
-    vp_vs_ratio = 1.73
-    vs = [v / vp_vs_ratio for v in vp]
-    h = 0.3
-    vel = {"Z": zz, "P": vp, "S": vs}
-    config["eikonal"] = {
-        "vel": vel,
-        "h": h,
-        "xlim_km": config["xlim_km"],
-        "ylim_km": config["ylim_km"],
-        "zlim_km": config["zlim_km"],
-    }
-    config["eikonal"] = init_eikonal2d(config["eikonal"])
+    config["eikonal"] = None
+    # ## Eikonal for 1D velocity model
+    # zz = [0.0, 5.5, 16.0, 32.0]
+    # vp = [5.5, 5.5, 6.7, 7.8]
+    # vp_vs_ratio = 1.73
+    # vs = [v / vp_vs_ratio for v in vp]
+    # h = 0.3
+    # vel = {"Z": zz, "P": vp, "S": vs}
+    # config["eikonal"] = {
+    #     "vel": vel,
+    #     "h": h,
+    #     "xlim_km": config["xlim_km"],
+    #     "ylim_km": config["ylim_km"],
+    #     "zlim_km": config["zlim_km"],
+    # }
+    # config["eikonal"] = init_eikonal2d(config["eikonal"])
 
     # %% config for location
     config["min_picks"] = 4
@@ -92,6 +87,14 @@ if __name__ == "__main__":
     config["min_score"] = 0.9
     config["min_s_picks"] = 2
     config["min_p_picks"] = 2
+
+    config["bfgs_bounds"] = (
+        (config["xlim_km"][0] - 1, config["xlim_km"][1] + 1),  # x
+        (config["ylim_km"][0] - 1, config["ylim_km"][1] + 1),  # y
+        # (config["zlim_km"][0], config["zlim_km"][1] + 1),  # z
+        (0, config["zlim_km"][1] + 1),
+        (None, None),  # t
+    )
 
     # %%
     plt.figure()
@@ -105,14 +108,12 @@ if __name__ == "__main__":
     plt.savefig(os.path.join(figure_path, "stations.png"), bbox_inches="tight", dpi=300)
 
     # %%
-    picks = pd.read_csv(os.path.join(data_path, "gamma_picks.csv"), parse_dates=["phase_time"])
-    events = pd.read_csv(os.path.join(data_path, "gamma_events.csv"), parse_dates=["time"])
+    mapping_phase_type_int = {"P": 0, "S": 1}
+    config["vel"] = {mapping_phase_type_int[k]: v for k, v in config["vel"].items()}
     picks["phase_type"] = picks["phase_type"].map(mapping_phase_type_int)
 
     # %%
-    stations["station_term"] = 0.0
-    # stations["station_term_p"] = 0.0
-    # stations["station_term_s"] = 0.0
+    # stations["station_term"] = 0.0
     stations["idx_sta"] = stations.index  # reindex in case the index does not start from 0 or is not continuous
     events["idx_eve"] = events.index  # reindex in case the index does not start from 0 or is not continuous
 
@@ -142,8 +143,12 @@ if __name__ == "__main__":
 
         vmin = min(locations["z_km"].min(), events_old["depth_km"].min())
         vmax = max(locations["z_km"].max(), events_old["depth_km"].max())
-        xmin, xmax = stations["x_km"].min(), stations["x_km"].max()
-        ymin, ymax = stations["y_km"].min(), stations["y_km"].max()
+        # xmin, xmax = stations["x_km"].min(), stations["x_km"].max()
+        # ymin, ymax = stations["y_km"].min(), stations["y_km"].max()
+        xmin = min(stations["x_km"].min(), locations["x_km"].min())
+        xmax = max(stations["x_km"].max(), locations["x_km"].max())
+        ymin = min(stations["y_km"].min(), locations["y_km"].min())
+        ymax = max(stations["y_km"].max(), locations["y_km"].max())
         zmin, zmax = config["zlim_km"]
 
         fig, ax = plt.subplots(2, 2, figsize=(10, 8), gridspec_kw={"height_ratios": [2, 1]})
@@ -240,6 +245,7 @@ if __name__ == "__main__":
         cbar = fig.colorbar(im, ax=ax[1, 1])
         cbar.set_label("Depth (km)")
         plt.savefig(os.path.join(figure_path, f"location_{iter}.png"), bbox_inches="tight", dpi=300)
+        plt.close(fig)
 
     estimator = ADLoc(config, stations=stations[["x_km", "y_km", "z_km"]].values, eikonal=config["eikonal"])
     event_init = np.array([[np.mean(config["xlim_km"]), np.mean(config["ylim_km"]), np.mean(config["zlim_km"]), 0.0]])
@@ -249,9 +255,9 @@ if __name__ == "__main__":
     MAX_SST_ITER = 10
     # MIN_SST_S = 0.01
     iter = 0
+    locations = None
     while iter < MAX_SST_ITER:
-
-        picks, locations = invert_location(picks, events, stations, config, estimator, iter=iter)
+        picks, locations = invert_location(picks, events, stations, config, estimator, locations, iter=iter)
         station_term = picks[picks["mask"] == 1.0].groupby("idx_sta").agg({"residual_s": "mean"}).reset_index()
         stations["station_term"] += stations["idx_sta"].map(station_term.set_index("idx_sta")["residual_s"]).fillna(0)
 
@@ -290,9 +296,9 @@ if __name__ == "__main__":
     locations["depth_km"] = locations["z_km"]
     locations.drop(["idx_eve", "x_km", "y_km", "z_km"], axis=1, inplace=True, errors="ignore")
     stations.drop(["idx_sta", "x_km", "y_km", "z_km"], axis=1, inplace=True, errors="ignore")
-    stations.rename({"station_term": "adloc_station_term_s"}, axis=1, inplace=True)
-    picks.to_csv(os.path.join(data_path, "adloc_picks.csv"), index=False)
-    locations.to_csv(os.path.join(data_path, "adloc_events.csv"), index=False)
-    stations.to_csv(os.path.join(data_path, "adloc_stations.csv"), index=False)
+    # stations.rename({"station_term": "adloc_station_term_s"}, axis=1, inplace=True)
+    picks.to_csv(os.path.join(result_path, "adloc_picks.csv"), index=False)
+    locations.to_csv(os.path.join(result_path, "adloc_events.csv"), index=False)
+    stations.to_csv(os.path.join(result_path, "adloc_stations.csv"), index=False)
 
 # %%
