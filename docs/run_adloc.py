@@ -17,8 +17,9 @@ from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
 import utils
-from adloc import PhaseDataset, initialize_eikonal
+from adloc import PhaseDataset
 from adloc.adloc import TravelTime
+from adloc.eikonal2d import init_eikonal2d
 
 torch.manual_seed(0)
 np.random.seed(0)
@@ -203,6 +204,7 @@ def optimize(args, config, data_loader, travel_time):
     if (args.opt.lower() == "lbfgs") or (args.opt.lower() == "bfgs"):
 
         def closure():
+            # travel_time.event_loc.weight.data[:, 2].clamp_(min=config["zlim_km"][0], max=config["zlim_km"][1])
             optimizer.zero_grad()
             for meta in data_loader:
                 station_index = meta["station_index"]
@@ -221,7 +223,7 @@ def optimize(args, config, data_loader, travel_time):
                     dist.barrier()
                     dist.all_reduce(loss)
                 loss.backward()
-
+                travel_time.event_loc.weight.data[:, 2].clamp_(min=config["zlim_km"][0], max=config["zlim_km"][1])
             return loss
 
         optimizer.step(closure)
@@ -245,7 +247,6 @@ def optimize(args, config, data_loader, travel_time):
                     phase_type,
                     phase_time,
                     phase_weight,
-                    double_difference=False,
                 )["loss"]
                 loss.backward()
 
@@ -302,14 +303,15 @@ def main(args):
         config["maxdepth"] = 20.0
 
     # %%
-    proj = Proj(f"+proj=sterea +lon_0={config['longitude0']} +lat_0={config['latitude0']} +units=km")
-    config["xlim_km"] = proj(
-        longitude=[config["minlongitude"], config["maxlongitude"]], latitude=[config["latitude0"]] * 2
-    )
-    config["ylim_km"] = proj(
-        longitude=[config["longitude0"]] * 2, latitude=[config["minlatitude"], config["maxlatitude"]]
-    )
-    config["zlim_km"] = [config["mindepth"], config["maxdepth"]]
+    if ("xlim_km" not in config) or ("ylim_km" not in config) or ("zlim_km" not in config):
+        proj = Proj(f"+proj=sterea +lon_0={config['longitude0']} +lat_0={config['latitude0']} +units=km")
+        config["xlim_km"] = proj(
+            longitude=[config["minlongitude"], config["maxlongitude"]], latitude=[config["latitude0"]] * 2
+        )[0]
+        config["ylim_km"] = proj(
+            longitude=[config["longitude0"]] * 2, latitude=[config["minlatitude"], config["maxlatitude"]]
+        )[1]
+        config["zlim_km"] = [config["mindepth"], config["maxdepth"]]
 
     vp = 6.0
     vs = vp / 1.73
@@ -321,16 +323,16 @@ def main(args):
         vp = [5.5, 5.5, 6.7, 7.8]
         vp_vs_ratio = 1.73
         vs = [v / vp_vs_ratio for v in vp]
-        h = 1.0
-        vel = {"z": zz, "p": vp, "s": vs}
+        h = 0.3
+        vel = {"Z": zz, "P": vp, "S": vs}
         config["eikonal"] = {
             "vel": vel,
             "h": h,
-            "xlim": config["xlim_km"],
-            "ylim": config["ylim_km"],
-            "zlim": config["zlim_km"],
+            "xlim_km": config["xlim_km"],
+            "ylim_km": config["ylim_km"],
+            "zlim_km": config["zlim_km"],
         }
-        eikonal = initialize_eikonal(config["eikonal"])
+        eikonal = init_eikonal2d(config["eikonal"])
 
     # %% JSON format
     # with open(args.stations, "r") as fp:
@@ -341,6 +343,11 @@ def main(args):
     stations = pd.read_csv(args.stations)
     picks = pd.read_csv(args.picks, parse_dates=["phase_time"])
     events = pd.read_csv(args.events, parse_dates=["time"])
+
+    # %%
+    lon0 = stations["longitude"].median()
+    lat0 = stations["latitude"].median()
+    proj = Proj(f"+proj=sterea +lon_0={lon0} +lat_0={lat0}  +units=km")
 
     # %%
     stations[["x_km", "y_km"]] = stations.apply(

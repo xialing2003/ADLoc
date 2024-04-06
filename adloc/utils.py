@@ -136,9 +136,11 @@ def invert_location(picks, events, stations, config, estimator, events_init=None
         with mp.get_context("spawn").Pool(NCPU) as pool:
             for event_index, picks_by_event in picks.groupby("idx_eve"):
                 if events_init is not None:
-                    event_init = events_init[events_init["idx_eve"] == event_index][
-                        ["x_km", "y_km", "z_km", "time"]
-                    ].values[0]
+                    event_int = events_init[events_init["idx_eve"] == event_index]
+                    if len(event_int) > 0:
+                        event_init = event_int[["x_km", "y_km", "z_km", "time"]].values[0]
+                    else:
+                        event_init = None
                 thread = pool.apply_async(
                     invert,
                     args=(

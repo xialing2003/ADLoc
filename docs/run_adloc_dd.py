@@ -191,6 +191,7 @@ if __name__ == "__main__":
     config["vel"] = {mapping_phase_type_int[k]: v for k, v in config["vel"].items()}
 
     # %%
+    config["eikonal"] = None
     ## Eikonal for 1D velocity model
     zz = [0.0, 5.5, 16.0, 32.0]
     vp = [5.5, 5.5, 6.7, 7.8]
@@ -229,7 +230,7 @@ if __name__ == "__main__":
     station_loc = stations[["x_km", "y_km", "z_km"]].values
     # event_loc_init = np.zeros((num_event, 3))
     # event_loc_init[:, 2] = np.mean(config["zlim_km"])
-    event_loc_init = events[["x_km", "y_km", "z_km"]].values.copy() + np.random.randn(num_event, 3) * 5.0
+    event_loc_init = events[["x_km", "y_km", "z_km"]].values.copy() + np.random.randn(num_event, 3) * 2.0
     travel_time = TravelTimeDD(
         num_event,
         num_station,
@@ -237,7 +238,7 @@ if __name__ == "__main__":
         event_loc=event_loc_init,  # Initial location
         # event_loc=event_loc,  # Initial location
         # event_time=event_time,
-        # eikonal=config["eikonal"],
+        eikonal=config["eikonal"],
     )
 
     print(f"Dataset: {len(picks)} picks, {len(events)} events, {len(stations)} stations, {len(phase_dataset)} batches")
@@ -268,51 +269,52 @@ if __name__ == "__main__":
 
     ## invert loss
     ######################################################################################################
-    # optimizer = optim.Adam(params=travel_time.parameters(), lr=0.1)
-    # EPOCHS = 100
-    # for i in range(EPOCHS):
-    #     loss = 0
-    #     optimizer.zero_grad()
-    #     for meta in tqdm(data_loader, desc=f"Epoch {i}"):
-    #         station_index = meta["idx_sta"]
-    #         event_index = meta["idx_eve"]
-    #         phase_time = meta["phase_time"]
-    #         phase_type = meta["phase_type"]
-    #         phase_weight = meta["phase_weight"]
+    optimizer = optim.Adam(params=travel_time.parameters(), lr=0.1)
+    EPOCHS = 100
+    for i in range(EPOCHS):
+        loss = 0
+        optimizer.zero_grad()
+        for meta in tqdm(data_loader, desc=f"Epoch {i}"):
+            station_index = meta["idx_sta"]
+            event_index = meta["idx_eve"]
+            phase_time = meta["phase_time"]
+            phase_type = meta["phase_type"]
+            phase_weight = meta["phase_weight"]
 
-    #         loss_ = travel_time(
-    #             station_index,
-    #             event_index,
-    #             phase_type,
-    #             phase_time,
-    #             phase_weight,
-    #         )["loss"]
+            loss_ = travel_time(
+                station_index,
+                event_index,
+                phase_type,
+                phase_time,
+                phase_weight,
+            )["loss"]
 
-    #         # optimizer.zero_grad()
-    #         loss_.backward()
-    #         # optimizer.step()
-    #         loss += loss_
+            # optimizer.zero_grad()
+            loss_.backward()
+            # optimizer.step()
+            loss += loss_
 
-    #     optimizer.step()
-    #     print(f"Loss: {loss}")
+        optimizer.step()
+        travel_time.event_loc.weight.data[:, 2].clamp_(min=config["zlim_km"][0], max=config["zlim_km"][1])
+        print(f"Loss: {loss}")
 
-    #     invert_event_loc = travel_time.event_loc.weight.clone().detach().numpy()
-    #     invert_event_time = travel_time.event_time.weight.clone().detach().numpy()
+        invert_event_loc = travel_time.event_loc.weight.clone().detach().numpy()
+        invert_event_time = travel_time.event_time.weight.clone().detach().numpy()
 
-    #     events["time"] = events["time"] + pd.to_timedelta(np.squeeze(invert_event_time), unit="s")
-    #     events["x_km"] = invert_event_loc[:, 0]
-    #     events["y_km"] = invert_event_loc[:, 1]
-    #     events["z_km"] = invert_event_loc[:, 2]
-    #     events[["longitude", "latitude"]] = events.apply(
-    #         lambda x: pd.Series(proj(x["x_km"], x["y_km"], inverse=True)), axis=1
-    #     )
-    #     events["depth_km"] = events["z_km"]
-    #     events.to_csv(
-    #         f"{result_path}/adloc_dd_events.csv", index=False, float_format="%.5f", date_format="%Y-%m-%dT%H:%M:%S.%f"
-    #     )
+        # events["time"] = events["time"] + pd.to_timedelta(np.squeeze(invert_event_time), unit="s")
+        events["x_km"] = invert_event_loc[:, 0]
+        events["y_km"] = invert_event_loc[:, 1]
+        events["z_km"] = invert_event_loc[:, 2]
+        # events[["longitude", "latitude"]] = events.apply(
+        #     lambda x: pd.Series(proj(x["x_km"], x["y_km"], inverse=True)), axis=1
+        # )
+        # events["depth_km"] = events["z_km"]
+        # events.to_csv(
+        #     f"{result_path}/adloc_dd_events.csv", index=False, float_format="%.5f", date_format="%Y-%m-%dT%H:%M:%S.%f"
+        # )
 
-    #     if i % 10 == 0:
-    #         plotting(events, stations, config, figure_path, events_old, iter=i + 1)
+        if i % 10 == 0:
+            plotting(events, stations, config, figure_path, events_old, iter=i + 1)
 
     ######################################################################################################
     optimizer = optim.LBFGS(params=travel_time.parameters(), max_iter=100, line_search_fn="strong_wolfe")
@@ -338,6 +340,7 @@ if __name__ == "__main__":
             loss += loss_
 
         print(f"Loss: {loss}")
+        travel_time.event_loc.weight.data[:, 2].clamp_(min=config["zlim_km"][0], max=config["zlim_km"][1])
         return loss
 
     optimizer.step(closure)

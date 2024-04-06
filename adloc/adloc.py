@@ -107,8 +107,11 @@ class TravelTime(nn.Module):
             tt = dist / self.velocity[phase_type]
             tt = tt.float()
         else:
-            r = torch.linalg.norm(event_loc[:, :2] - station_loc[:, :2], axis=-1, keepdims=False)  ## nb, 2 (pair), 3
+            # r = torch.linalg.norm(event_loc[:, :2] - station_loc[:, :2], axis=-1, keepdims=False)  ## nb, 3
+            x = event_loc[:, 0] - station_loc[:, 0]
+            y = event_loc[:, 1] - station_loc[:, 1]
             z = event_loc[:, 2] - station_loc[:, 2]
+            r = torch.sqrt(x**2 + y**2)
 
             timetable = self.eikonal["up"] if phase_type == 0 else self.eikonal["us"]
             timetable_grad = self.eikonal["grad_up"] if phase_type == 0 else self.eikonal["grad_us"]
@@ -228,7 +231,6 @@ class TravelTimeDD(nn.Module):
 
             r = torch.linalg.norm(event_loc[:, :2] - station_loc[:, :2], axis=-1, keepdims=False)  ## nb, 2 (pair), 3
             z = event_loc[:, 2] - station_loc[:, 2]
-            # z = torch.clamp(z, min=0, max=30)
 
             timetable = self.eikonal["up"] if phase_type == 0 else self.eikonal["us"]
             timetable_grad = self.eikonal["grad_up"] if phase_type == 0 else self.eikonal["grad_us"]

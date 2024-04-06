@@ -65,20 +65,20 @@ if __name__ == "__main__":
     # %%
     config["eikonal"] = None
     # ## Eikonal for 1D velocity model
-    # zz = [0.0, 5.5, 16.0, 32.0]
-    # vp = [5.5, 5.5, 6.7, 7.8]
-    # vp_vs_ratio = 1.73
-    # vs = [v / vp_vs_ratio for v in vp]
-    # h = 0.3
-    # vel = {"Z": zz, "P": vp, "S": vs}
-    # config["eikonal"] = {
-    #     "vel": vel,
-    #     "h": h,
-    #     "xlim_km": config["xlim_km"],
-    #     "ylim_km": config["ylim_km"],
-    #     "zlim_km": config["zlim_km"],
-    # }
-    # config["eikonal"] = init_eikonal2d(config["eikonal"])
+    zz = [0.0, 5.5, 16.0, 32.0]
+    vp = [5.5, 5.5, 6.7, 7.8]
+    vp_vs_ratio = 1.73
+    vs = [v / vp_vs_ratio for v in vp]
+    h = 0.3
+    vel = {"Z": zz, "P": vp, "S": vs}
+    config["eikonal"] = {
+        "vel": vel,
+        "h": h,
+        "xlim_km": config["xlim_km"],
+        "ylim_km": config["ylim_km"],
+        "zlim_km": config["zlim_km"],
+    }
+    config["eikonal"] = init_eikonal2d(config["eikonal"])
 
     # %% config for location
     config["min_picks"] = 4

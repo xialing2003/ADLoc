@@ -9,6 +9,8 @@ import pandas as pd
 from pyproj import Proj
 from tqdm import tqdm
 
+from adloc.eikonal2d import calc_traveltime, init_eikonal2d
+
 np.random.seed(111)
 
 # %%
@@ -40,15 +42,39 @@ config["xlim_km"] = [min_x_km, max_x_km]
 config["ylim_km"] = [min_y_km, max_y_km]
 config["zlim_km"] = [config["mindepth"], config["maxdepth"]]
 config["vel"] = {"P": 6.0, "S": 6.0 / 1.73}
+config["eikonal"] = None
 
 with open(f"{result_path}/config.json", "w") as f:
     json.dump(config, f, indent=4)
 
+# %%
+zz = [0.0, 5.5, 16.0, 32.0]
+vp = [5.5, 5.5, 6.7, 7.8]
+vp_vs_ratio = 1.73
+vs = [v / vp_vs_ratio for v in vp]
+h = 0.3
+vel = {"Z": zz, "P": vp, "S": vs}
+config["eikonal"] = {
+    "vel": vel,
+    "h": h,
+    "xlim_km": config["xlim_km"],
+    "ylim_km": config["ylim_km"],
+    "zlim_km": config["zlim_km"],
+}
+config["eikonal"] = init_eikonal2d(config["eikonal"])
 
 # %%
-def calc_time(event_loc, station_loc, phase_type, velocity={"P": 6.0, "S": 6.0 / 1.73}):
-    dist = np.linalg.norm(event_loc - station_loc, axis=-1, keepdims=True)
-    tt = dist / velocity[phase_type]
+mapping_phase_type_int = {"P": 0, "S": 1}
+
+
+# %%
+def calc_time(event_loc, station_loc, phase_type, velocity={"P": 6.0, "S": 6.0 / 1.73}, eikonal=None):
+    # def calc_time(event_loc, station_loc, phase_type, velocity={0: 6.0, 1: 6.0 / 1.73}, eikonal=None):
+    if eikonal is None:
+        dist = np.linalg.norm(event_loc - station_loc, axis=-1, keepdims=False)
+        tt = dist / np.array([velocity[x] for x in phase_type])
+    else:
+        tt = calc_traveltime(event_loc, station_loc, [mapping_phase_type_int[x] for x in phase_type], eikonal)
     return tt
 
 
@@ -102,13 +128,17 @@ for depth in [5.0, 10.0, 15.0]:
         z_km = depth
         for j, station in stations.iterrows():
             for phase_type in ["P", "S"]:
+                # for phase_type in [0, 1]:
                 travel_time = calc_time(
                     np.array([[x_km, y_km, z_km]]),
                     np.array([[station["x_km"], station["y_km"], station["z_km"]]]),
-                    phase_type,
+                    [phase_type],
                     velocity=config["vel"],
-                )[0, 0]
-                arrival_time = origin_time + timedelta(seconds=travel_time) + timedelta(seconds=station["station_term"])
+                    eikonal=config["eikonal"],
+                )[0]
+                arrival_time = (
+                    origin_time + timedelta(seconds=float(travel_time)) + timedelta(seconds=station["station_term"])
+                )
                 pick = [
                     station["station_id"],
                     arrival_time.strftime("%Y-%m-%dT%H:%M:%S.%f"),
@@ -128,13 +158,17 @@ for depth in [5.0, 10.0, 15.0]:
         z_km = depth
         for j, station in stations.iterrows():
             for phase_type in ["P", "S"]:
+                # for phase_type in [0, 1]:
                 travel_time = calc_time(
                     np.array([[x_km, y_km, z_km]]),
                     np.array([[station["x_km"], station["y_km"], station["z_km"]]]),
-                    phase_type,
+                    [phase_type],
                     velocity=config["vel"],
-                )[0, 0]
-                arrival_time = origin_time + timedelta(seconds=travel_time) + timedelta(seconds=station["station_term"])
+                    eikonal=config["eikonal"],
+                )[0]
+                arrival_time = (
+                    origin_time + timedelta(seconds=float(travel_time)) + timedelta(seconds=station["station_term"])
+                )
                 pick = [
                     station["station_id"],
                     arrival_time.strftime("%Y-%m-%dT%H:%M:%S.%f"),
@@ -154,13 +188,17 @@ for depth in [5.0, 10.0, 15.0]:
         z_km = depth
         for j, station in stations.iterrows():
             for phase_type in ["P", "S"]:
+                # for phase_type in [0, 1]:
                 travel_time = calc_time(
                     np.array([[x_km, y_km, z_km]]),
                     np.array([[station["x_km"], station["y_km"], station["z_km"]]]),
-                    phase_type,
+                    [phase_type],
                     velocity=config["vel"],
-                )[0, 0]
-                arrival_time = origin_time + timedelta(seconds=travel_time) + timedelta(seconds=station["station_term"])
+                    eikonal=config["eikonal"],
+                )[0]
+                arrival_time = (
+                    origin_time + timedelta(seconds=float(travel_time)) + timedelta(seconds=station["station_term"])
+                )
                 pick = [
                     station["station_id"],
                     arrival_time.strftime("%Y-%m-%dT%H:%M:%S.%f"),
@@ -229,6 +267,15 @@ axs[2].legend()
 
 plt.tight_layout()
 plt.savefig(f"{result_path}/events.png", dpi=300, bbox_inches="tight")
+
+plt.figure(figsize=(12, 5))
+picks = picks.merge(stations[["station_id", "x_km", "y_km", "z_km"]], on="station_id")
+picks["phase_time"] = pd.to_datetime(picks["phase_time"])
+mapping_color = lambda x: f"C{x}"
+plt.scatter(picks["phase_time"], picks["x_km"], c=picks["event_index"].map(mapping_color), s=1)
+plt.xlabel("phase_time")
+plt.ylabel("x_km")
+plt.savefig(f"{result_path}/picks.png", dpi=300, bbox_inches="tight")
 
 # %%
 os.system(f"cp {result_path}/* ../docs/test_data/synthetic/")

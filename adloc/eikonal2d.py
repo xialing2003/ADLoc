@@ -184,6 +184,38 @@ def traveltime(event_index, station_index, phase_type, events, stations, eikonal
     return tt
 
 
+def calc_traveltime(event_locs, station_locs, phase_type, eikonal):
+    """
+    event_locs: (num_event, 3) array of event locations
+    station_locs: (num_station, 3) array of station locations
+    phase_type: (num_event,) array of phase type
+    eikonal: dictionary of eikonal solver
+    """
+
+    x = event_locs[:, 0] - station_locs[:, 0]
+    y = event_locs[:, 1] - station_locs[:, 1]
+    z = event_locs[:, 2] - station_locs[:, 2]
+    r = np.sqrt(x**2 + y**2)
+
+    rgrid0 = eikonal["rgrid"][0]
+    zgrid0 = eikonal["zgrid"][0]
+    nr = eikonal["nr"]
+    nz = eikonal["nz"]
+    h = eikonal["h"]
+
+    if isinstance(phase_type, list):
+        phase_type = np.array(phase_type)
+
+    tt = np.zeros(len(phase_type), dtype=np.float32)
+    p_index = phase_type == 0
+    s_index = phase_type == 1
+
+    tt[p_index] = _interp(eikonal["up"], r[p_index], z[p_index], rgrid0, zgrid0, nr, nz, h)
+    tt[s_index] = _interp(eikonal["us"], r[s_index], z[s_index], rgrid0, zgrid0, nr, nz, h)
+
+    return tt
+
+
 # def grad_traveltime(event_loc, station_loc, phase_type, eikonal):
 def grad_traveltime(event_index, station_index, phase_type, events, stations, eikonal):
 
@@ -231,9 +263,15 @@ def grad_traveltime(event_index, station_index, phase_type, events, stations, ei
 
     return grad
 
+
 def init_eikonal2d(config):
 
-    rlim = [0, np.sqrt((config["xlim_km"][1] - config["xlim_km"][0]) ** 2 + (config["ylim_km"][1] - config["ylim_km"][0]) ** 2)]
+    rlim = [
+        0,
+        np.sqrt(
+            (config["xlim_km"][1] - config["xlim_km"][0]) ** 2 + (config["ylim_km"][1] - config["ylim_km"][0]) ** 2
+        ),
+    ]
     zlim = config["zlim_km"]
     h = config["h"]
 
@@ -275,7 +313,7 @@ def init_eikonal2d(config):
             "zgrid": zgrid,
             "nr": nr,
             "nz": nz,
-            "h": h
+            "h": h,
         }
     )
 
