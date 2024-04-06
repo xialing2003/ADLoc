@@ -1,4 +1,5 @@
 # %%
+import argparse
 import multiprocessing as mp
 import os
 import pickle
@@ -9,6 +10,15 @@ import pandas as pd
 from pyproj import Proj
 from sklearn.neighbors import NearestNeighbors
 from tqdm import tqdm
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Generate pairs")
+    parser.add_argument("--stations", type=str, default="test_data/synthetic/stations.csv")
+    parser.add_argument("--events", type=str, default="test_data/synthetic/events.csv")
+    parser.add_argument("--picks", type=str, default="test_data/synthetic/picks.csv")
+    parser.add_argument("--result_path", type=str, default="results/synthetic")
+    return parser.parse_args()
 
 
 # %%
@@ -56,6 +66,11 @@ def convert_dd(
 # %%
 if __name__ == "__main__":
 
+    args = parse_args()
+    result_path = args.result_path
+    if not os.path.exists(result_path):
+        os.makedirs(result_path)
+
     # %%
     MAX_PAIR_DIST = 10  # km
     MAX_NEIGHBORS = 500
@@ -65,16 +80,9 @@ if __name__ == "__main__":
     mapping_phase_type_int = {"P": 0, "S": 1}
 
     # %%
-    # data_path = "../tests/results/"
-    # catalog_path = "../tests/results/"
-    data_path = "test_data/ridgecrest"
-    catalog_path = "results/ridgecrest"
-    stations = pd.read_csv(os.path.join(data_path, "stations.csv"))
-    # %%
-    # picks = pd.read_csv(os.path.join(data_path, "picks.csv"), parse_dates=["phase_time"])
-    # events = pd.read_csv(os.path.join(data_path, "events.csv"), parse_dates=["time"])
-    picks = pd.read_csv(os.path.join(catalog_path, "adloc_picks.csv"), parse_dates=["phase_time"])
-    events = pd.read_csv(os.path.join(catalog_path, "adloc_events.csv"), parse_dates=["time"])
+    stations = pd.read_csv(args.stations)
+    picks = pd.read_csv(args.picks, parse_dates=["phase_time"])
+    events = pd.read_csv(args.events, parse_dates=["time"])
 
     picks = picks[picks["event_index"] != -1]
     # check phase_type is P/S or 0/1
@@ -200,7 +208,7 @@ if __name__ == "__main__":
             ]
         )
         pairs_array = np.memmap(
-            os.path.join(catalog_path, "adloc_dt.dat"),
+            os.path.join(result_path, "adloc_dt.dat"),
             mode="w+",
             shape=(len(dd_time),),
             dtype=dtypes,
@@ -211,11 +219,11 @@ if __name__ == "__main__":
         pairs_array["phase_type"] = phase_type
         pairs_array["phase_score"] = phase_score
         pairs_array["dd_time"] = dd_time
-        with open(os.path.join(catalog_path, "adloc_dtypes.pkl"), "wb") as f:
+        with open(os.path.join(result_path, "adloc_dtypes.pkl"), "wb") as f:
             pickle.dump(dtypes, f)
 
-        events.to_csv(os.path.join(catalog_path, "adloc_events.csv"), index=False)
-        stations.to_csv(os.path.join(catalog_path, "adloc_stations.csv"), index=False)
-        picks.to_csv(os.path.join(catalog_path, "adloc_picks.csv"), index=False)
+        events.to_csv(os.path.join(result_path, "adloc_events.csv"), index=False)
+        stations.to_csv(os.path.join(result_path, "adloc_stations.csv"), index=False)
+        picks.to_csv(os.path.join(result_path, "adloc_picks.csv"), index=False)
 
 # %%
