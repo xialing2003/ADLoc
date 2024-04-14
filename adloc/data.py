@@ -171,7 +171,9 @@ class PhaseDataset(Dataset):
 
             phase_time = np.concatenate(phase_time)
             phase_score = np.concatenate(phase_score)
-            phase_type = np.array([{"P": 0, "S": 1}[x.upper()] for x in phase_type])
+            # phase_type = np.array([{"P": 0, "S": 1}[x.upper()] for x in phase_type])
+            # if ("P" in phase_type) and ("S" in phase_type):
+            #     phase_type = np.array([{"P": 0, "S": 1}[x] for x in phase_type])
             event_index = np.array(event_index)
             station_index = np.concatenate(station_index)
 

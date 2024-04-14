@@ -19,7 +19,7 @@ from tqdm.auto import tqdm
 import utils
 from adloc import PhaseDataset
 from adloc.adloc import TravelTime
-from adloc.eikonal2d import init_eikonal2d
+from adloc.eikonal2d import init_eikonal2d, traveltime
 
 torch.manual_seed(0)
 np.random.seed(0)
@@ -40,6 +40,12 @@ def get_args_parser(add_help=True):
     parser.add_argument("--events", type=str, default="test_data/synthetic/events.csv", help="events csv")
     parser.add_argument("--result_path", type=str, default="results/synthetic", help="result path")
     parser.add_argument("--figure_path", type=str, default="figures/synthetic", help="result path")
+    # parser.add_argument("--config", default="test_data/ridgecrest/config.json", type=str, help="config file")
+    # parser.add_argument("--stations", type=str, default="test_data/ridgecrest/stations.csv", help="station json")
+    # parser.add_argument("--picks", type=str, default="test_data/ridgecrest/gamma_picks.csv", help="picks csv")
+    # parser.add_argument("--events", type=str, default="test_data/ridgecrest/gamma_events.csv", help="events csv")
+    # parser.add_argument("--result_path", type=str, default="results/ridgecrest", help="result path")
+    # parser.add_argument("--figure_path", type=str, default="figures/ridgecrest", help="result path")
     parser.add_argument("--bootstrap", default=0, type=int, help="bootstrap")
 
     parser.add_argument("--device", default="cuda", type=str, help="device (Use cuda or cpu Default: cuda)")
@@ -93,7 +99,7 @@ def get_args_parser(add_help=True):
     return parser.parse_args()
 
 
-def plotting(stations, figure_path, config, picks, events_old, locations, station_term, iter=0):
+def plotting(stations, figure_path, config, picks, events_old, locations, station_term=None, iter=0):
 
     vmin = min(locations["z_km"].min(), events_old["depth_km"].min())
     vmax = max(locations["z_km"].max(), events_old["depth_km"].max())
@@ -173,7 +179,7 @@ def plotting(stations, figure_path, config, picks, events_old, locations, statio
 
 def optimize(args, config, data_loader, travel_time):
     if (args.opt.lower() == "lbfgs") or (args.opt.lower() == "bfgs"):
-        optimizer = optim.LBFGS(params=travel_time.parameters(), max_iter=1000, line_search_fn="strong_wolfe")
+        optimizer = optim.LBFGS(params=travel_time.parameters(), max_iter=1000, line_search_fn="strong_wolfe", lr=1.0)
     elif args.opt.lower() == "adam":
         optimizer = optim.Adam(params=travel_time.parameters(), lr=1.0)
     elif args.opt.lower() == "sgd":
@@ -204,7 +210,9 @@ def optimize(args, config, data_loader, travel_time):
     if (args.opt.lower() == "lbfgs") or (args.opt.lower() == "bfgs"):
 
         def closure():
-            # travel_time.event_loc.weight.data[:, 2].clamp_(min=config["zlim_km"][0], max=config["zlim_km"][1])
+            travel_time.event_loc.weight.data[:, 0].clamp_(min=config["xlim_km"][0], max=config["xlim_km"][1])
+            travel_time.event_loc.weight.data[:, 1].clamp_(min=config["ylim_km"][0], max=config["ylim_km"][1])
+            travel_time.event_loc.weight.data[:, 2].clamp_(min=config["zlim_km"][0], max=config["zlim_km"][1])
             optimizer.zero_grad()
             for meta in data_loader:
                 station_index = meta["station_index"]
@@ -223,10 +231,12 @@ def optimize(args, config, data_loader, travel_time):
                     dist.barrier()
                     dist.all_reduce(loss)
                 loss.backward()
-                travel_time.event_loc.weight.data[:, 2].clamp_(min=config["zlim_km"][0], max=config["zlim_km"][1])
             return loss
 
         optimizer.step(closure)
+        travel_time.event_loc.weight.data[:, 0].clamp_(min=config["xlim_km"][0], max=config["xlim_km"][1])
+        travel_time.event_loc.weight.data[:, 1].clamp_(min=config["ylim_km"][0], max=config["ylim_km"][1])
+        travel_time.event_loc.weight.data[:, 2].clamp_(min=config["zlim_km"][0], max=config["zlim_km"][1])
 
     else:
         for i in range(args.epochs):
@@ -264,6 +274,8 @@ def optimize(args, config, data_loader, travel_time):
             # travel_time.event_loc.weight.data[:, 2] += (
             #     torch.randn_like(travel_time.event_loc.weight.data[:, 2]) * (args.epochs - i) / args.epochs
             # )
+            travel_time.event_loc.weight.data[:, 0].clamp_(min=config["xlim_km"][0], max=config["xlim_km"][1])
+            travel_time.event_loc.weight.data[:, 1].clamp_(min=config["ylim_km"][0], max=config["ylim_km"][1])
             travel_time.event_loc.weight.data[:, 2].clamp_(min=config["zlim_km"][0], max=config["zlim_km"][1])
 
     loss = 0
@@ -348,6 +360,13 @@ def main(args):
     lon0 = stations["longitude"].median()
     lat0 = stations["latitude"].median()
     proj = Proj(f"+proj=sterea +lon_0={lon0} +lat_0={lat0}  +units=km")
+    if "depth_km" not in stations:
+        stations["depth_km"] = -stations["elevation_m"] / 1000
+    if "station_term" not in stations:
+        stations["station_term"] = 0.0
+    mapping_int = {"P": 0, "S": 1}
+    if ("P" in picks["phase_type"].values) or ("S" in picks["phase_type"].values):
+        picks["phase_type"] = picks["phase_type"].apply(lambda x: mapping_int[x])
 
     # %%
     stations[["x_km", "y_km"]] = stations.apply(
@@ -379,6 +398,8 @@ def main(args):
     station_dt = None
 
     # %%
+    events_origin = events.copy()
+    # %%
     utils.init_distributed_mode(args)
     print(args)
 
@@ -397,41 +418,23 @@ def main(args):
         num_station,
         station_loc,
         event_loc=event_loc_init,  # Initial location
-        # event_loc=event_loc,  # Initial location
+        # event_loc=events[["x_km", "y_km", "z_km"]].values,
         # event_time=event_time,
         velocity={"P": vp, "S": vs},
         eikonal=eikonal,
     )
 
+    # %% Conventional location
     print(f"Dataset: {len(picks)} picks, {len(events)} events, {len(stations)} stations, {len(phase_dataset)} batches")
-    optimize(args, config, data_loader, travel_time)
-
-    # %%
-    MAX_SST_ITER = 10
-    for i in range(MAX_SST_ITER):
-        picks["residual_s"] = travel_time(
-            picks["idx_sta"].values, picks["idx_eve"].values, picks["phase_type"].values, picks["phase_time"].values
-        )["residual_s"]
-
-        station_term = picks.groupby("idx_sta").agg({"residual_s": "mean"}).reset_index()
-        stations["station_term"] += stations["idx_sta"].map(station_term.set_index("idx_sta")["residual_s"]).fillna(0)
-        travel_time.station_dt.weight.data = torch.tensor(stations["station_term"].values, dtype=torch.float32).view(
-            -1, 1
-        )
+    print(f"============================ Conventional location ============================")
+    for i in range(10):
         optimize(args, config, data_loader, travel_time)
 
     # %%
-    station_dt = travel_time.station_dt.weight.clone().detach().numpy()
-    print(
-        f"station_dt: max = {np.max(station_dt)}, min = {np.min(station_dt)}, median = {np.median(station_dt)}, mean = {np.mean(station_dt)}, std = {np.std(station_dt)}"
-    )
     invert_event_loc = travel_time.event_loc.weight.clone().detach().numpy()
     invert_event_time = travel_time.event_time.weight.clone().detach().numpy()
-    invert_station_dt = travel_time.station_dt.weight.clone().detach().numpy()
 
-    stations["station_term"] = invert_station_dt[:, 0]
-    with open(f"{args.result_path}/stations.json", "w") as fp:
-        json.dump(stations.to_dict(orient="index"), fp, indent=4)
+    events = events_origin.copy()
     events["time"] = events["time"] + pd.to_timedelta(np.squeeze(invert_event_time), unit="s")
     events["x_km"] = invert_event_loc[:, 0]
     events["y_km"] = invert_event_loc[:, 1]
@@ -444,8 +447,146 @@ def main(args):
         f"{args.result_path}/adloc_events.csv", index=False, float_format="%.5f", date_format="%Y-%m-%dT%H:%M:%S.%f"
     )
 
-    plotting(stations, args.figure_path, config, picks, events, events, station_dt, 0)
+    plotting(stations, args.figure_path, config, picks, events, events, station_dt, 100)
 
+    # %% Location with SST (station static term)
+    print(f"============================ Location with SST ============================")
+    MAX_SST_ITER = 10
+    idx_sta = torch.tensor(picks["idx_sta"].values, dtype=torch.long)
+    idx_eve = torch.tensor(picks["idx_eve"].values, dtype=torch.long)
+    phase_type = torch.tensor(picks["phase_type"].values, dtype=torch.long)
+    phase_time = torch.tensor(picks["travel_time"].values, dtype=torch.float32)
+    phase_weight = torch.tensor(picks["phase_score"].values, dtype=torch.float32)
+    weighted_mean = lambda x, w: np.sum(x * w) / np.sum(w)
+    for i in range(MAX_SST_ITER):
+        with torch.inference_mode():
+            picks["residual_s"] = (
+                travel_time(idx_sta, idx_eve, phase_type, phase_time, phase_weight)["residual_s"].detach().numpy()
+            )
+        # station_term = picks.groupby("idx_sta").agg({"residual_s": "mean"}).reset_index()
+        station_term = (
+            picks.groupby("idx_sta")
+            .apply(lambda x: weighted_mean(x["residual_s"], x["phase_score"]))
+            .reset_index(name="residual_s")
+        )
+        stations["station_term"] += stations["idx_sta"].map(station_term.set_index("idx_sta")["residual_s"]).fillna(0)
+        travel_time.station_dt.weight.data = torch.tensor(stations["station_term"].values, dtype=torch.float32).view(
+            -1, 1
+        )
+        optimize(args, config, data_loader, travel_time)
+
+        # print(
+        #     f"station term: max = {np.max(station_term)}, min = {np.min(station_term)}, median = {np.median(station_term)}, mean = {np.mean(station_term)}, std = {np.std(station_term)}"
+        # )
+        invert_event_loc = travel_time.event_loc.weight.clone().detach().numpy()
+        invert_event_time = travel_time.event_time.weight.clone().detach().numpy()
+
+        events = events_origin.copy()
+        events["time"] = events["time"] + pd.to_timedelta(np.squeeze(invert_event_time), unit="s")
+        events["x_km"] = invert_event_loc[:, 0]
+        events["y_km"] = invert_event_loc[:, 1]
+        events["z_km"] = invert_event_loc[:, 2]
+        events[["longitude", "latitude"]] = events.apply(
+            lambda x: pd.Series(proj(x["x_km"], x["y_km"], inverse=True)), axis=1
+        )
+        events["depth_km"] = events["z_km"]
+        plotting(stations, args.figure_path, config, picks, events, events, station_dt, i)
+
+    plotting(stations, args.figure_path, config, picks, events, events, station_dt, 200)
+
+    # %% Location with grid search
+    print(f"============================ Location with grid search ============================")
+    event_loc = travel_time.event_loc.weight.clone().detach().numpy()
+    event_time = travel_time.event_time.weight.clone().detach().numpy()
+    nx, ny, nz = 11, 11, 21
+    search_grid = np.stack(
+        np.meshgrid(np.linspace(-5, 5, nx), np.linspace(-5, 5, ny), np.linspace(0, 20, nz), indexing="ij"), axis=-1
+    ).reshape(-1, 3)
+    num_grid = search_grid.shape[0]
+    picks_ = picks.copy()
+    event_loc_gs = []  # grid_search location
+    event_time_gs = []  # grid_search time
+    # for i, event_loc_ in enumerate(tqdm(event_loc, desc="Grid search:")):
+    for i, (event_loc_, event_time_) in tqdm(
+        enumerate(zip(event_loc, event_time)), desc="Grid search:", total=num_event
+    ):
+        picks_per_event = picks_[picks_["idx_eve"] == i]
+        num_picks = len(picks_per_event)
+
+        idx_sta = picks_per_event["idx_sta"].values
+        phase_type = picks_per_event["phase_type"].values
+        phase_weight = picks_per_event["phase_score"].values
+
+        idx_eve = np.repeat(np.arange(num_grid), num_picks)
+        idx_sta = np.tile(idx_sta, num_grid)
+        phase_type = np.tile(phase_type, num_grid)
+        station_dt_ = stations.iloc[idx_sta]["station_term"].values
+
+        event_loc0 = event_loc_ - np.array([0, 0, np.round(event_loc_[2])])
+        # event_loc0 = event_loc_ - np.array([0, 0, event_loc_[2]])
+        event_time0 = event_time_
+        tt = (
+            event_time_
+            + station_dt_
+            + traveltime(
+                idx_eve,
+                idx_sta,
+                phase_type,
+                search_grid + event_loc0,
+                station_loc,
+                eikonal=eikonal,
+            )
+        )
+        tt = np.reshape(tt, (num_grid, num_picks))
+        dt = tt - picks_per_event["travel_time"].values
+        dt_mean = np.sum(dt * phase_weight, axis=-1) / np.sum(phase_weight)
+        dt_std = np.sqrt(np.sum((dt - dt_mean[:, None]) ** 2 * phase_weight, axis=-1) / np.sum(phase_weight))
+        idx = np.argmin(dt_std)
+        event_loc_gs.append(search_grid[idx] + event_loc0)
+        event_time_gs.append(np.mean(dt, axis=-1)[idx] + event_time0)
+
+        # tt = np.reshape(tt, (nx, ny, nz, num_picks))
+        # tmp_loc = search_grid[np.argmin(dt)]
+        # tmp_x = np.linspace(-5, 5, nx)
+        # tmp_y = np.linspace(-5, 5, ny)
+        # tmp_z = np.linspace(0, 30, nz)
+        # fig, ax = plt.subplots(1, 3, figsize=(15, 5), gridspec_kw={"width_ratios": [1.8, 1, 1]})
+        # im = ax[0].pcolormesh(tmp_x, tmp_y, dt[:, :, nz // 2].T, cmap="viridis")
+        # ax[0].scatter(tmp_loc[0], tmp_loc[1], c="r", marker="x")
+        # fig.colorbar(im, ax=ax[0])
+        # ax[0].set_title("Depth")
+        # im = ax[1].pcolormesh(tmp_x, tmp_z, dt[nx // 2, :, :].T, cmap="viridis")
+        # ax[1].scatter(tmp_loc[1], tmp_loc[2], c="r", marker="x")
+        # fig.colorbar(im, ax=ax[1])
+        # ax[1].set_title("X")
+        # im = ax[2].pcolormesh(tmp_y, tmp_z, dt[:, ny // 2, :].T, cmap="viridis")
+        # ax[2].scatter(tmp_loc[0], tmp_loc[2], c="r", marker="x")
+        # fig.colorbar(im, ax=ax[2])
+        # ax[2].set_title("Y")
+        # ax[1].invert_yaxis()
+        # ax[2].invert_yaxis()
+        # plt.savefig("debug.png", bbox_inches="tight", dpi=300)
+        # plt.close(fig)
+
+    events = events_origin.copy()
+    events["time"] = events["time"] + pd.to_timedelta(np.squeeze(event_time_gs), unit="s")
+    events["x_km"] = np.array(event_loc_gs)[:, 0]
+    events["y_km"] = np.array(event_loc_gs)[:, 1]
+    events["z_km"] = np.array(event_loc_gs)[:, 2]
+    events[["longitude", "latitude"]] = events.apply(
+        lambda x: pd.Series(proj(x["x_km"], x["y_km"], inverse=True)), axis=1
+    )
+    events["depth_km"] = events["z_km"]
+    events.to_csv(
+        f"{args.result_path}/adloc_events_grid_search.csv",
+        index=False,
+        float_format="%.5f",
+        date_format="%Y-%m-%dT%H:%M:%S.%f",
+    )
+
+    plotting(stations, args.figure_path, config, picks, events, events, station_dt, 300)
+
+    # %%
     events_boostrap = []
     for i in tqdm(range(args.bootstrap), desc="Bootstrapping:"):
         picks_by_event = picks.groupby("idx_eve")
@@ -506,7 +647,7 @@ def main(args):
             date_format="%Y-%m-%dT%H:%M:%S.%f",
         )
 
-        plotting(stations, args.figure_path, config, picks, events, events, station_dt, 1)
+        plotting(stations, args.figure_path, config, picks, events, events, station_dt, 400)
 
 
 if __name__ == "__main__":

@@ -144,7 +144,7 @@ def _interp(time_table, r, z, rgrid0, zgrid0, nr, nz, h):
 
 
 # def traveltime(event_loc, station_loc, phase_type, eikonal):
-def traveltime(event_index, station_index, phase_type, events, stations, eikonal):
+def traveltime(event_index, station_index, phase_type, events, stations, eikonal, vel={0: 6.0, 1: 6.0 / 1.73}):
     """
     event_index: list of event index
     station_index: list of station index
@@ -152,34 +152,42 @@ def traveltime(event_index, station_index, phase_type, events, stations, eikonal
     events: list of event location
     stations: list of station location
     """
-    if isinstance(event_index, int):
-        event_index = np.array([event_index] * len(phase_type))
-    # r = np.linalg.norm(event_loc[:, :2] - station_loc[:, :2], axis=-1, keepdims=False)
-    # z = event_loc[:, 2] - station_loc[:, 2]
-    x = events[event_index, 0] - stations[station_index, 0]
-    y = events[event_index, 1] - stations[station_index, 1]
-    z = events[event_index, 2] - stations[station_index, 2]
-    r = np.sqrt(x**2 + y**2)
+    if eikonal is None:
+        v = np.array([vel[x] for x in phase_type])
+        tt = np.linalg.norm(events[event_index] - stations[station_index], axis=-1, keepdims=False) / v
+    else:
+        if isinstance(event_index, int):
+            event_index = np.array([event_index] * len(phase_type))
 
-    rgrid0 = eikonal["rgrid"][0]
-    zgrid0 = eikonal["zgrid"][0]
-    nr = eikonal["nr"]
-    nz = eikonal["nz"]
-    h = eikonal["h"]
+        # r = np.linalg.norm(event_loc[:, :2] - station_loc[:, :2], axis=-1, keepdims=False)
+        # z = event_loc[:, 2] - station_loc[:, 2]
+        x = events[event_index, 0] - stations[station_index, 0]
+        y = events[event_index, 1] - stations[station_index, 1]
+        z = events[event_index, 2] - stations[station_index, 2]
+        r = np.sqrt(x**2 + y**2)
 
-    if isinstance(phase_type, list):
-        phase_type = np.array(phase_type)
-    # if isinstance(station_index, list):
-    #     station_index = np.array(station_index)
+        rgrid0 = eikonal["rgrid"][0]
+        zgrid0 = eikonal["zgrid"][0]
+        nr = eikonal["nr"]
+        nz = eikonal["nz"]
+        h = eikonal["h"]
 
-    tt = np.zeros(len(phase_type), dtype=np.float32)
-    # p_index = phase_type == "p"
-    # s_index = phase_type == "s"
-    p_index = phase_type == 0
-    s_index = phase_type == 1
+        if isinstance(phase_type, list):
+            phase_type = np.array(phase_type)
+        # if isinstance(station_index, list):
+        #     station_index = np.array(station_index)
 
-    tt[p_index] = _interp(eikonal["up"], r[p_index], z[p_index], rgrid0, zgrid0, nr, nz, h)
-    tt[s_index] = _interp(eikonal["us"], r[s_index], z[s_index], rgrid0, zgrid0, nr, nz, h)
+        tt = np.zeros(len(phase_type), dtype=np.float32)
+
+        # p_index = phase_type == "P"
+        # s_index = phase_type == "S"
+        p_index = phase_type == 0
+        s_index = phase_type == 1
+
+        if len(tt[p_index]) > 0:
+            tt[p_index] = _interp(eikonal["up"], r[p_index], z[p_index], rgrid0, zgrid0, nr, nz, h)
+        if len(tt[s_index]) > 0:
+            tt[s_index] = _interp(eikonal["us"], r[s_index], z[s_index], rgrid0, zgrid0, nr, nz, h)
 
     return tt
 
