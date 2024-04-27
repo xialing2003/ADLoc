@@ -1,8 +1,8 @@
 # %% Download test data
 # !if [ -f demo.tar ]; then rm demo.tar; fi
 # !if [ -d test_data ]; then rm -rf test_data; fi
-# !wget -q https://github.com/AI4EPS/GaMMA/releases/download/test_data/demo.tar
-# !tar -xf demo.tar
+# !wget -q https://github.com/AI4EPS/datasets/releases/download/test_data/test_data.tar
+# !tar -xf test_data.tar
 
 # %%
 import json
@@ -22,13 +22,18 @@ from adloc.utils import invert_location
 if __name__ == "__main__":
     # %%
     # data_path = "test_data/ridgecrest/"
-    region = "synthetic"
+    # region = "synthetic"
+    region = "ridgecrest"
     data_path = f"test_data/{region}/"
     config = json.load(open(os.path.join(data_path, "config.json")))
-    picks = pd.read_csv(os.path.join(data_path, "picks.csv"), parse_dates=["phase_time"])
-    events = pd.read_csv(os.path.join(data_path, "events.csv"), parse_dates=["time"])
+    # picks = pd.read_csv(os.path.join(data_path, "gamma_picks.csv"), parse_dates=["phase_time"])
+    # events = pd.read_csv(os.path.join(data_path, "gamma_events.csv"), parse_dates=["time"])
+    picks = pd.read_csv(os.path.join(data_path, "phasenet_plus_picks.csv"), parse_dates=["phase_time"])
+    events = None
     stations = pd.read_csv(os.path.join(data_path, "stations.csv"))
     stations["depth_km"] = -stations["elevation_m"] / 1000
+    if "station_term" not in stations.columns:
+        stations["station_term"] = 0.0
     result_path = f"results/{region}/"
     if not os.path.exists(result_path):
         os.makedirs(result_path)
@@ -47,20 +52,30 @@ if __name__ == "__main__":
     stations["z_km"] = stations["elevation_m"].apply(lambda x: -x / 1e3)
 
     ## set up the config; you can also specify the region manually
-    # xmin = stations["x_km"].min() - 50
-    # xmax = stations["x_km"].max() + 50
-    # ymin = stations["y_km"].min() - 50
-    # ymax = stations["y_km"].max() + 50
-    # x0 = (xmin + xmax) / 2
-    # y0 = (ymin + ymax) / 2
-    # config = {}
-    # config["xlim_km"] = (2 * xmin - x0, 2 * xmax - x0)
-    # config["ylim_km"] = (2 * ymin - y0, 2 * ymax - y0)
-    # config["zlim_km"] = (stations["z_km"].min(), 20)
-    # zmin = config["zlim_km"][0]
-    # zmax = config["zlim_km"][1]
+    if ("xlim_km" not in config) or ("ylim_km" not in config) or ("zlim_km" not in config):
+        # xmin = stations["x_km"].min() - 50
+        # xmax = stations["x_km"].max() + 50
+        # ymin = stations["y_km"].min() - 50
+        # ymax = stations["y_km"].max() + 50
+        # zmin = stations["z_km"].min()
+        # zmax = 20
+        # x0 = (xmin + xmax) / 2
+        # y0 = (ymin + ymax) / 2
+        # config["xlim_km"] = (2 * xmin - x0, 2 * xmax - x0)
+        # config["ylim_km"] = (2 * ymin - y0, 2 * ymax - y0)
+        # config["zlim_km"] = (zmin, zmax)
 
-    # config["vel"] = {"P": 6.0, "S": 6.0 / 1.73}
+        # project minlatitude, maxlatitude, minlongitude, maxlongitude to ymin, ymax, xmin, xmax
+        xmin, ymin = proj(config["minlongitude"], config["minlatitude"])
+        xmax, ymax = proj(config["maxlongitude"], config["maxlatitude"])
+        zmin = stations["z_km"].min()
+        zmax = 20
+        config = {}
+        config["xlim_km"] = (xmin, xmax)
+        config["ylim_km"] = (ymin, ymax)
+        config["zlim_km"] = (zmin, zmax)
+
+    config["vel"] = {"P": 6.0, "S": 6.0 / 1.73}
 
     # %%
     config["eikonal"] = None
@@ -81,7 +96,7 @@ if __name__ == "__main__":
     config["eikonal"] = init_eikonal2d(config["eikonal"])
 
     # %% config for location
-    config["min_picks"] = 4
+    config["min_picks"] = 8
     config["min_picks_ratio"] = 0.2
     config["max_residual_s"] = 1.0
     config["min_score"] = 0.9
@@ -115,17 +130,23 @@ if __name__ == "__main__":
     # %%
     # stations["station_term"] = 0.0
     stations["idx_sta"] = stations.index  # reindex in case the index does not start from 0 or is not continuous
-    events["idx_eve"] = events.index  # reindex in case the index does not start from 0 or is not continuous
-
-    picks = picks.merge(events[["event_index", "idx_eve"]], on="event_index")
     picks = picks.merge(stations[["station_id", "idx_sta"]], on="station_id")
 
+    if events is not None:
+        events["idx_eve"] = events.index  # reindex in case the index does not start from 0 or is not continuous
+        picks = picks.merge(events[["event_index", "idx_eve"]], on="event_index")
+    else:
+        picks["idx_eve"] = picks["event_index"]
+
     # %% backup old events
-    events_old = events.copy()
-    events_old[["x_km", "y_km"]] = events_old.apply(
-        lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
-    )
-    events_old["z_km"] = events["depth_km"]
+    if events is not None:
+        events_old = events.copy()
+        events_old[["x_km", "y_km"]] = events_old.apply(
+            lambda x: pd.Series(proj(longitude=x.longitude, latitude=x.latitude)), axis=1
+        )
+        events_old["z_km"] = events["depth_km"]
+    else:
+        events_old = None
 
     # %%
     def plotting(stations, figure_path, config, picks, events_old, locations, station_term, iter=0):
@@ -141,17 +162,12 @@ if __name__ == "__main__":
         ax[1, 1].set_title("Pick residual (s)")
         plt.savefig(os.path.join(figure_path, f"hist_{iter}.png"), bbox_inches="tight", dpi=300)
 
-        vmin = min(locations["z_km"].min(), events_old["depth_km"].min())
-        vmax = max(locations["z_km"].max(), events_old["depth_km"].max())
-        # xmin, xmax = stations["x_km"].min(), stations["x_km"].max()
-        # ymin, ymax = stations["y_km"].min(), stations["y_km"].max()
-        xmin = min(stations["x_km"].min(), locations["x_km"].min())
-        xmax = max(stations["x_km"].max(), locations["x_km"].max())
-        ymin = min(stations["y_km"].min(), locations["y_km"].min())
-        ymax = max(stations["y_km"].max(), locations["y_km"].max())
+        xmin, xmax = config["xlim_km"]
+        ymin, ymax = config["ylim_km"]
         zmin, zmax = config["zlim_km"]
-
-        fig, ax = plt.subplots(2, 2, figsize=(10, 8), gridspec_kw={"height_ratios": [2, 1]})
+        vmin, vmax = config["zlim_km"]
+        alpha = 0.8
+        fig, ax = plt.subplots(2, 2, figsize=(12, 8), gridspec_kw={"height_ratios": [2, 1]})
         # fig, ax = plt.subplots(2, 3, figsize=(15, 8), gridspec_kw={"height_ratios": [2, 1]})
         im = ax[0, 0].scatter(
             locations["x_km"],
@@ -162,9 +178,14 @@ if __name__ == "__main__":
             marker="o",
             vmin=vmin,
             vmax=vmax,
+            alpha=alpha,
         )
+        # set ratio 1:1
+        ax[0, 0].set_aspect("equal", "box")
         ax[0, 0].set_xlim([xmin, xmax])
         ax[0, 0].set_ylim([ymin, ymax])
+        ax[0, 0].set_xlabel("X (km)")
+        ax[0, 0].set_ylabel("Y (km)")
         cbar = fig.colorbar(im, ax=ax[0, 0])
         cbar.set_label("Depth (km)")
         ax[0, 0].set_title(f"ADLoc: {len(locations)} events")
@@ -176,10 +197,13 @@ if __name__ == "__main__":
             cmap="viridis_r",
             s=100,
             marker="^",
-            alpha=0.5,
+            alpha=alpha,
         )
+        ax[0, 1].set_aspect("equal", "box")
         ax[0, 1].set_xlim([xmin, xmax])
         ax[0, 1].set_ylim([ymin, ymax])
+        ax[0, 1].set_xlabel("X (km)")
+        ax[0, 1].set_ylabel("Y (km)")
         cbar = fig.colorbar(im, ax=ax[0, 1])
         cbar.set_label("Residual (s)")
         ax[0, 1].set_title(f"Station term: {np.mean(np.abs(stations['station_term'].values)):.4f} s")
@@ -224,9 +248,13 @@ if __name__ == "__main__":
             marker="o",
             vmin=vmin,
             vmax=vmax,
+            alpha=alpha,
         )
+        # ax[1, 0].set_aspect("equal", "box")
         ax[1, 0].set_xlim([xmin, xmax])
         ax[1, 0].set_ylim([zmax, zmin])
+        ax[1, 0].set_xlabel("X (km)")
+        # ax[1, 0].set_ylabel("Depth (km)")
         cbar = fig.colorbar(im, ax=ax[1, 0])
         cbar.set_label("Depth (km)")
 
@@ -239,9 +267,13 @@ if __name__ == "__main__":
             marker="o",
             vmin=vmin,
             vmax=vmax,
+            alpha=alpha,
         )
+        # ax[1, 1].set_aspect("equal", "box")
         ax[1, 1].set_xlim([ymin, ymax])
         ax[1, 1].set_ylim([zmax, zmin])
+        ax[1, 1].set_xlabel("Y (km)")
+        # ax[1, 1].set_ylabel("Depth (km)")
         cbar = fig.colorbar(im, ax=ax[1, 1])
         cbar.set_label("Depth (km)")
         plt.savefig(os.path.join(figure_path, f"location_{iter}.png"), bbox_inches="tight", dpi=300)
@@ -257,7 +289,7 @@ if __name__ == "__main__":
     iter = 0
     locations = None
     while iter < MAX_SST_ITER:
-        picks, locations = invert_location(picks, events, stations, config, estimator, locations, iter=iter)
+        picks, locations = invert_location(picks, stations, config, estimator, events_init=locations, iter=iter)
         station_term = picks[picks["mask"] == 1.0].groupby("idx_sta").agg({"residual_s": "mean"}).reset_index()
         stations["station_term"] += stations["idx_sta"].map(station_term.set_index("idx_sta")["residual_s"]).fillna(0)
 
@@ -297,6 +329,8 @@ if __name__ == "__main__":
     locations.drop(["idx_eve", "x_km", "y_km", "z_km"], axis=1, inplace=True, errors="ignore")
     stations.drop(["idx_sta", "x_km", "y_km", "z_km"], axis=1, inplace=True, errors="ignore")
     # stations.rename({"station_term": "adloc_station_term_s"}, axis=1, inplace=True)
+    picks.sort_values(["phase_time"], inplace=True)
+    locations.sort_values(["time"], inplace=True)
     picks.to_csv(os.path.join(result_path, "adloc_picks.csv"), index=False)
     locations.to_csv(os.path.join(result_path, "adloc_events.csv"), index=False)
     stations.to_csv(os.path.join(result_path, "adloc_stations.csv"), index=False)
