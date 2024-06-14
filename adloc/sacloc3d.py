@@ -2,6 +2,8 @@
 import matplotlib
 import numpy as np
 import scipy
+import h5py
+import os
 from _ransac import RANSACRegressor
 from eikonal3d import eikonal_solve, grad_traveltime, traveltime
 from sklearn.base import BaseEstimator
@@ -150,7 +152,7 @@ class ADLoc(BaseEstimator):
         return R2
 
 
-def init_eikonal3d(config, stations):
+def init_eikonal3d(config, stations, loc = None):
 
     # nr = 21
     # nz = 21
@@ -160,10 +162,18 @@ def init_eikonal3d(config, stations):
     ylim = config["ylim_km"]
     zlim = config["zlim_km"]
     # vel = config["vel"]
-    if "vel" in config:
-        vel = config["vel"]
+    if "vel_p" in config:
+        with h5py.File(loc + "/velocity_p.h5", "r") as f:
+            vp = f["data"][:]
+        with h5py.File(loc + "/velocity_s.h5", "r") as f:
+            vs = f["data"][:]
+        vp = np.transpose(vp)
+        vs = np.transpose(vs)
     else:
-        vel = {"p": 6.0, "s": 6.0 / 1.73}
+        vel = {"P": 6.0, "S": 6.0 / 1.73}
+        vp = np.ones((nx, ny, nz)) * vel["P"]
+        vs = np.ones((nx, ny, nz)) * vel["S"]
+    
     if "h" in config:
         h = config["h"]
     else:
@@ -177,54 +187,55 @@ def init_eikonal3d(config, stations):
 
     print(f"{nx=}, {ny=}, {nz=}")
     print(f"{len(stations) = }")
-    vp = np.ones((nx, ny, nz)) * vel["p"]
-    vs = np.ones((nx, ny, nz)) * vel["s"]
 
     num_station = len(stations)
-    if os.path.exists("up.dat") or os.path.exists("us.dat"):
-        if input("Files up.dat/us.data already exists. Do you want to overwrite? (y/n): ") == "y":
-            up = np.memmap("up.dat", dtype="float32", mode="w+", shape=(num_station, nx * ny * nz))
-            us = np.memmap("us.dat", dtype="float32", mode="w+", shape=(num_station, nx * ny * nz))
-            grad_up = np.memmap("grad_up.dat", dtype="float32", mode="w+", shape=(num_station, 3, nx * ny * nz))
-            grad_us = np.memmap("grad_us.dat", dtype="float32", mode="w+", shape=(num_station, 3, nx * ny * nz))
+    flag = False
+    if not (os.path.exists(loc + "/loc/up.dat") or os.path.exists(loc + "/loc/us.dat")):
+        flag = True
+    elif input("Files up.dat/us.data already exists. Do you want to overwrite? (y/n): ") == "y":
+        flag = True
 
-            pbar = tqdm(total=num_station)
-            for i, station in stations.iterrows():
+    if flag == True:   
+        up = np.memmap(loc + "/loc/up.dat", dtype="float32", mode="w+", shape=(num_station, nx * ny * nz))
+        us = np.memmap(loc + "/loc/us.dat", dtype="float32", mode="w+", shape=(num_station, nx * ny * nz))
+        grad_up = np.memmap(loc + "/loc/grad_up.dat", dtype="float32", mode="w+", shape=(num_station, 3, nx * ny * nz))
+        grad_us = np.memmap(loc + "/loc/grad_us.dat", dtype="float32", mode="w+", shape=(num_station, 3, nx * ny * nz))
 
-                pbar.set_description(f"Station {station['station_id']}")
+        # pbar = tqdm(total=num_station)
+        for i, station in stations.iterrows():
 
-                up_ = 1000 * np.ones((nx, ny, nz))
+            # pbar.set_description(f"Station {station['station_id']}")
 
-                us_ = 1000 * np.ones((nx, ny, nz))
-                # up_[sta_ix, sta_iy, sta_iz] = 0.0
-                # us_[sta_ix, sta_iy, sta_iz] = 0.0
-                up_ = init_u0(xlim, ylim, zlim, station, h, vp, up_)
-                us_ = init_u0(xlim, ylim, zlim, station, h, vs, us_)
+            up_ = 1000 * np.ones((nx, ny, nz))
+            us_ = 1000 * np.ones((nx, ny, nz))
+            up_ = init_u0(xlim, ylim, zlim, station, h, vp, up_)
+            us_ = init_u0(xlim, ylim, zlim, station, h, vs, us_)
 
-                up_ = eikonal_solve(up_, vp, h)
-                grad_up_ = np.gradient(up_, h, edge_order=2)
-                up_ = up_.ravel()
-                grad_up_ = [x.ravel() for x in grad_up_]
-                up[i, :] = up_
-                grad_up[i, :, :] = grad_up_
+            up_ = eikonal_solve(up_, vp, h)
+            grad_up_ = np.gradient(up_, h, edge_order=2)
+            up_ = up_.ravel()
+            grad_up_ = [x.ravel() for x in grad_up_]
+            up[i, :] = up_
+            grad_up[i, :, :] = grad_up_
 
-                # us_ = 1000 * np.ones((nx, ny, nz))
-                # us_[sta_ix, sta_iy, sta_iz] = 0.0
+            # us_ = 1000 * np.ones((nx, ny, nz))
+            # us_[sta_ix, sta_iy, sta_iz] = 0.0
 
-                us_ = eikonal_solve(us_, vs, h)
-                grad_us_ = np.gradient(us_, h, edge_order=2)
-                us_ = us_.ravel()
-                grad_us_ = [x.ravel() for x in grad_us_]
-                us[i, :] = us_
-                grad_us[i, :, :] = grad_us_
+            us_ = eikonal_solve(us_, vs, h)
+            grad_us_ = np.gradient(us_, h, edge_order=2)
+            us_ = us_.ravel()
+            grad_us_ = [x.ravel() for x in grad_us_]
+            us[i, :] = us_
+            grad_us[i, :, :] = grad_us_
 
-                pbar.update(1)
+            # pbar.update(1)
 
+    print("the travel time of stations finished!\n")
     config = {
-        "up": "up.dat",
-        "us": "us.dat",
-        "grad_up": "grad_up.dat",
-        "grad_us": "grad_us.dat",
+        "up": loc+"/loc/up.dat",
+        "us": loc+"/loc/us.dat",
+        "grad_up": loc+"/loc/grad_up.dat",
+        "grad_us": loc+"/loc/grad_us.dat",
         "xgrid": xgrid,
         "ygrid": ygrid,
         "zgrid": zgrid,
@@ -276,7 +287,7 @@ if __name__ == "__main__":
     with open(os.path.join(data_path, "config.json"), "r") as f:
         config = json.load(f)
 
-    eikonal = init_eikonal3d(config, stations)
+    eikonal = init_eikonal3d(config, stations, data_path)
     # eikonal = None
 
     # %%
