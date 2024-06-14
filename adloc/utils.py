@@ -116,7 +116,7 @@ def invert(
         mask.extend(inlier_mask.astype(int))
 
 
-def invert_location(picks, events, stations, config, estimator, events_init=None, iter=0):
+def invert_location(picks, stations, config, estimator, events_init=None, iter=0):
 
     if "ncpu" in config:
         NCPU = config["ncpu"]
@@ -177,7 +177,10 @@ def invert_location(picks, events, stations, config, estimator, events_init=None
     locations = pd.DataFrame(
         locations, columns=["idx_eve", "x_km", "y_km", "z_km", "time", "adloc_score", "adloc_residual_s", "num_picks"]
     )
-    locations = locations.merge(events[["event_index", "idx_eve"]], on="idx_eve")
+    if events_init is not None:
+        locations = locations.merge(events_init[["event_index", "idx_eve"]], on="idx_eve")
+    else:
+        locations["event_index"] = locations["idx_eve"]
 
     print(f"ADLoc using {len(picks[picks['mask'] == 1])} picks outof {len(picks)} picks")
 
